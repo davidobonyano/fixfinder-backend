@@ -28,7 +28,10 @@ const createNotificationValidation = [
       'profile_verified',
       'payment_received',
       'system_announcement',
-      'reminder'
+      'reminder',
+      'connection_request',
+      'connection_accepted',
+      'connection_rejected'
     ])
     .withMessage('Invalid notification type'),
   body('title')

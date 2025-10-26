@@ -1,6 +1,7 @@
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const User = require("../models/User");
+const Professional = require("../models/Professional");
 
 const generateToken = (userId) => {
   return jwt.sign({ id: userId }, process.env.JWT_SECRET, {
@@ -25,6 +26,26 @@ exports.register = async (req, res, next) => {
     const hashed = await bcrypt.hash(password, salt);
 
     const user = await User.create({ name, email, password: hashed, role });
+    
+    // If user is registering as a professional, create a Professional document
+    if (role === 'professional') {
+      await Professional.create({
+        user: user._id,
+        name: name,
+        email: email,
+        isActive: true,
+        // Default values - can be updated later through the professional form
+        category: 'General',
+        bio: 'Professional profile - please complete your profile',
+        hourlyRate: 0,
+        location: {
+          address: 'Location not set',
+          coordinates: { lat: 0, lng: 0 }
+        }
+      });
+      console.log('✅ Professional document created for user:', user._id);
+    }
+    
     const token = generateToken(user._id);
 
     return res.status(201).json({ user: user.toSafeJSON(), token });

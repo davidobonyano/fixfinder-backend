@@ -20,7 +20,10 @@ const notificationSchema = new mongoose.Schema({
       'profile_verified',
       'payment_received',
       'system_announcement',
-      'reminder'
+      'reminder',
+      'connection_request',
+      'connection_accepted',
+      'connection_rejected'
     ]
   },
   title: {
@@ -50,6 +53,16 @@ const notificationSchema = new mongoose.Schema({
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Review'
     },
+    connectionRequestId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Connection'
+    },
+    requesterId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User'
+    },
+    requesterName: String,
+    professionalName: String,
     url: String,
     metadata: mongoose.Schema.Types.Mixed
   },

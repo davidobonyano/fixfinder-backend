@@ -1,5 +1,5 @@
 const multer = require("multer");
-const cloudinary = require("../config/cloudinary");
+const { cloudinary } = require("../config/cloudinary");
 
 const storage = multer.memoryStorage();
 
@@ -18,6 +18,13 @@ const upload = multer({
 
 const uploadBufferToCloudinary = (buffer, options) =>
   new Promise((resolve, reject) => {
+    console.log('🔍 Cloudinary object:', cloudinary ? 'exists' : 'undefined');
+    console.log('🔍 Cloudinary uploader:', cloudinary?.uploader ? 'exists' : 'undefined');
+    
+    if (!cloudinary || !cloudinary.uploader) {
+      return reject(new Error('Cloudinary not properly configured'));
+    }
+    
     const stream = cloudinary.uploader.upload_stream(options, (error, result) => {
       if (error) return reject(error);
       resolve(result);

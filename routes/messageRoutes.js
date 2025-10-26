@@ -7,7 +7,10 @@ const {
   sendMessage,
   editMessage,
   deleteMessage,
-  markAsRead
+  markAsRead,
+  shareLocation,
+  stopLocationShare,
+  deleteMyMessagesInConversation
 } = require('../controllers/messageController');
 const { protect } = require('../middleware/authMiddleware');
 const { body } = require('express-validator');
@@ -81,6 +84,25 @@ router.put('/:id', protect, [
 // @desc    Delete a message
 // @access  Private
 router.delete('/:id', protect, deleteMessage);
+
+// @route   DELETE /api/messages/conversations/:id/my-messages
+// @desc    Delete all my messages in a conversation
+// @access  Private
+router.delete('/conversations/:id/my-messages', protect, deleteMyMessagesInConversation);
+
+// @route   POST /api/messages/conversations/:id/location-share
+// @desc    Start sharing location in a conversation
+// @access  Private
+router.post('/conversations/:id/location-share', protect, [
+  body('lat').isNumeric().withMessage('Latitude must be a number'),
+  body('lng').isNumeric().withMessage('Longitude must be a number'),
+  body('accuracy').optional().isNumeric().withMessage('Accuracy must be a number')
+], shareLocation);
+
+// @route   POST /api/messages/conversations/:id/stop-location-share
+// @desc    Stop sharing location in a conversation
+// @access  Private
+router.post('/conversations/:id/stop-location-share', protect, stopLocationShare);
 
 // Dev-only: seed a demo conversation with a mock professional
 router.post('/dev/seed-demo-conversation', protect, async (req, res) => {

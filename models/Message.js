@@ -24,7 +24,9 @@ const messageSchema = new mongoose.Schema({
     location: {
       lat: { type: Number },
       lng: { type: Number },
-      label: { type: String }
+      accuracy: { type: Number },
+      label: { type: String },
+      timestamp: { type: Date, default: Date.now }
     },
     contact: {
       name: { type: String },
@@ -48,8 +50,12 @@ const messageSchema = new mongoose.Schema({
   },
   messageType: {
     type: String,
-    enum: ['text', 'location', 'contact', 'image', 'video', 'audio', 'document', 'system'],
+    enum: ['text', 'location', 'contact', 'image', 'video', 'audio', 'document', 'system', 'location_share'],
     default: 'text'
+  },
+  isLocationSharing: {
+    type: Boolean,
+    default: false
   },
   isRead: {
     type: Boolean,

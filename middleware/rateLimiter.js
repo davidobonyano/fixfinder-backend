@@ -14,10 +14,23 @@ const rateLimit = (windowMs = 15 * 60 * 1000, max = 100) => (req, res, next) => 
   rateLimitMap.set(key, validRequests);
 
   if (validRequests.length >= max) {
-    return res.status(429).json({ message: "Too many requests" });
+    return res.status(429).json({ 
+      message: "Too many requests",
+      limit: max,
+      remaining: 0,
+      resetTime: new Date(now + windowMs).toISOString()
+    });
   }
 
   validRequests.push(now);
+  
+  // Add rate limit headers
+  res.set({
+    'X-RateLimit-Limit': max,
+    'X-RateLimit-Remaining': max - validRequests.length,
+    'X-RateLimit-Reset': new Date(now + windowMs).toISOString()
+  });
+  
   next();
 };
 

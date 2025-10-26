@@ -182,6 +182,35 @@ router.get('/profile', protect, async (req, res) => {
   }
 });
 
+// @route   GET /api/users/:id
+// @desc    Get user by id (basic public profile for chat/view)
+// @access  Private
+router.get('/:id', protect, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const user = await User.findById(id).select('-password');
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      data: user
+    });
+  } catch (error) {
+    console.error('Get user by id error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server error',
+      error: error.message
+    });
+  }
+});
+
 // @route   POST /api/users/change-password
 // @desc    Change user password
 // @access  Private
@@ -283,27 +312,39 @@ router.post('/send-email-verification', protect, async (req, res) => {
     // Send verification email
     const verificationUrl = `${process.env.CLIENT_URL || 'http://localhost:5173'}/verify-email?token=${verificationToken}`;
     
-    await sendEmail({
-      to: user.email,
-      subject: 'Verify Your Email - FixFinder',
-      html: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-          <h2 style="color: #2563eb;">Verify Your Email Address</h2>
-          <p>Hello ${user.name},</p>
-          <p>Please click the button below to verify your email address:</p>
-          <div style="text-align: center; margin: 30px 0;">
-            <a href="${verificationUrl}" 
-               style="background-color: #2563eb; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; display: inline-block;">
-              Verify Email
-            </a>
+    try {
+      await sendEmail({
+        to: user.email,
+        subject: 'Verify Your Email - FixFinder',
+        html: `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <h2 style="color: #2563eb;">Verify Your Email Address</h2>
+            <p>Hello ${user.name},</p>
+            <p>Please click the button below to verify your email address:</p>
+            <div style="text-align: center; margin: 30px 0;">
+              <a href="${verificationUrl}" 
+                 style="background-color: #2563eb; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; display: inline-block;">
+                Verify Email
+              </a>
+            </div>
+            <p>Or copy and paste this link in your browser:</p>
+            <p style="word-break: break-all; color: #666;">${verificationUrl}</p>
+            <p>This link will expire in 24 hours.</p>
+            <p>If you didn't request this verification, please ignore this email.</p>
           </div>
-          <p>Or copy and paste this link in your browser:</p>
-          <p style="word-break: break-all; color: #666;">${verificationUrl}</p>
-          <p>This link will expire in 24 hours.</p>
-          <p>If you didn't request this verification, please ignore this email.</p>
-        </div>
-      `
-    });
+        `
+      });
+    } catch (emailError) {
+      console.error('Send email verification error:', emailError);
+      
+      // If email fails, return the verification URL for manual verification
+      return res.json({
+        success: true,
+        message: 'Email service unavailable. Please use this verification link:',
+        verificationUrl: verificationUrl,
+        note: 'Email service is currently unavailable. Please copy the verification URL above and open it in your browser to verify your email.'
+      });
+    }
 
     res.json({
       success: true,

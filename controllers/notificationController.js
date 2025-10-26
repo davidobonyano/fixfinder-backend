@@ -18,6 +18,8 @@ const getNotifications = async (req, res) => {
       .populate('data.jobId', 'title status')
       .populate('data.professionalId', 'name category')
       .populate('data.conversationId')
+      .populate('data.connectionRequestId', 'status requester professional')
+      .populate('data.requesterId', 'name email')
       .sort({ createdAt: -1 })
       .limit(limit * 1)
       .skip((page - 1) * limit);

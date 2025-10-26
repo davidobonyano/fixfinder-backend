@@ -206,14 +206,28 @@ const sendMessage = async (req, res) => {
 
     // Media uploads disabled (no req.files handling)
 
+    // Build content object based on message type
+    let messageContent = {};
+    
+    if (messageType === 'text' && content?.text) {
+      messageContent.text = content.text;
+    } else if (messageType === 'location' && content?.location) {
+      messageContent.location = content.location;
+    } else if (messageType === 'location_share' && content?.location) {
+      messageContent.location = content.location;
+    } else if (messageType === 'contact' && content?.contact) {
+      messageContent.contact = content.contact;
+    } else if (content) {
+      // For other types, use the full content
+      messageContent = content;
+    }
+
     // Create message
     const message = new Message({
       conversation: id,
       sender: userId,
       senderType: userType,
-      content: messageType === 'text' ? { text: content?.text || '' } :
-               messageType === 'location' ? { location: content?.location } :
-               messageType === 'contact' ? { contact: content?.contact } : { text: '' },
+      content: messageContent,
       messageType,
       replyTo
     });
@@ -241,11 +255,15 @@ const sendMessage = async (req, res) => {
     );
 
     if (otherParticipant) {
+      // Get sender details to ensure we have the name
+      const sender = await User.findById(userId).select('name');
+      const senderName = sender?.name || req.user.name || 'Someone';
+      
       await Notification.create({
         recipient: otherParticipant.user,
         type: 'new_message',
         title: 'New Message',
-        message: `You have a new message from ${req.user.name}`,
+        message: `You have a new message from ${senderName}`,
         data: {
           conversationId: id,
           messageId: message._id
@@ -293,12 +311,12 @@ const editMessage = async (req, res) => {
       });
     }
 
-    // Check if message is not too old (e.g., 24 hours)
-    const hoursSinceCreated = (new Date() - message.createdAt) / (1000 * 60 * 60);
-    if (hoursSinceCreated > 24) {
+    // Check if message is not too old (e.g., 2 minutes for quick edits)
+    const minutesSinceCreated = (new Date() - message.createdAt) / (1000 * 60);
+    if (minutesSinceCreated > 2) {
       return res.status(400).json({
         success: false,
-        message: 'Message is too old to edit'
+        message: 'Message is too old to edit (2 minutes limit)'
       });
     }
 
@@ -408,6 +426,147 @@ const markAsRead = async (req, res) => {
   }
 };
 
+// @desc    Send location sharing message
+// @route   POST /api/messages/conversations/:id/location-share
+// @access  Private
+const shareLocation = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { lat, lng, accuracy } = req.body;
+    const userId = req.user.id;
+    const userType = req.user.role === 'professional' ? 'professional' : 'user';
+
+    // Verify user is part of the conversation
+    const conversation = await Conversation.findById(id);
+    if (!conversation) {
+      return res.status(404).json({
+        success: false,
+        message: 'Conversation not found'
+      });
+    }
+
+    const isParticipant = conversation.participants.some(
+      p => p.user.toString() === userId
+    );
+
+    if (!isParticipant) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized to share location in this conversation'
+      });
+    }
+
+    // Create location sharing message (only for sender)
+    const message = new Message({
+      conversation: id,
+      sender: userId,
+      senderType: userType,
+      content: {
+        text: '🗺️ You are now sharing your location.',
+        location: { lat, lng, accuracy, timestamp: new Date() }
+      },
+      messageType: 'location_share',
+      isLocationSharing: true
+    });
+
+    await message.save();
+
+    // Update conversation
+    await Conversation.findByIdAndUpdate(id, {
+      lastMessage: message._id,
+      lastMessageAt: message.createdAt,
+      $inc: {
+        [`unreadCount.${userType === 'professional' ? 'user' : 'professional'}`]: 1
+      }
+    });
+
+    // Populate sender details
+    await message.populate('sender', 'name email');
+
+    res.status(201).json({
+      success: true,
+      message: 'Location sharing started',
+      data: message
+    });
+  } catch (error) {
+    console.error('Share location error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server error',
+      error: error.message
+    });
+  }
+};
+
+// @desc    Stop location sharing
+// @route   POST /api/messages/conversations/:id/stop-location-share
+// @access  Private
+const stopLocationShare = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user.id;
+    const userType = req.user.role === 'professional' ? 'professional' : 'user';
+
+    // Verify user is part of the conversation
+    const conversation = await Conversation.findById(id);
+    if (!conversation) {
+      return res.status(404).json({
+        success: false,
+        message: 'Conversation not found'
+      });
+    }
+
+    const isParticipant = conversation.participants.some(
+      p => p.user.toString() === userId
+    );
+
+    if (!isParticipant) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized to stop location sharing in this conversation'
+      });
+    }
+
+    // Create stop location sharing message
+    const message = new Message({
+      conversation: id,
+      sender: userId,
+      senderType: userType,
+      content: {
+        text: '🔒 Location sharing stopped.'
+      },
+      messageType: 'system'
+    });
+
+    await message.save();
+
+    // Update conversation
+    await Conversation.findByIdAndUpdate(id, {
+      lastMessage: message._id,
+      lastMessageAt: message.createdAt,
+      $inc: {
+        [`unreadCount.${userType === 'professional' ? 'user' : 'professional'}`]: 1
+      }
+    });
+
+    // Populate sender details
+    await message.populate('sender', 'name email');
+
+    res.status(201).json({
+      success: true,
+      message: 'Location sharing stopped',
+      data: message
+    });
+  } catch (error) {
+    console.error('Stop location share error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server error',
+      error: error.message
+    });
+  }
+};
+
 module.exports = {
   getConversations,
   createOrGetConversation,
@@ -415,7 +574,45 @@ module.exports = {
   sendMessage,
   editMessage,
   deleteMessage,
-  markAsRead
+  markAsRead,
+  shareLocation,
+  stopLocationShare,
+  // New export added below
 };
 
+
+// @desc    Delete all my messages in a conversation (soft delete)
+// @route   DELETE /api/messages/conversations/:id/my-messages
+// @access  Private
+const deleteMyMessagesInConversation = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user.id;
+
+    // Verify conversation exists and user participates
+    const conversation = await Conversation.findById(id);
+    if (!conversation) {
+      return res.status(404).json({ success: false, message: 'Conversation not found' });
+    }
+
+    const isParticipant = conversation.participants.some(p => p.user.toString() === userId);
+    if (!isParticipant) {
+      return res.status(403).json({ success: false, message: 'Not authorized to modify this conversation' });
+    }
+
+    // Soft delete only the current user's messages in this conversation
+    const result = await Message.updateMany(
+      { conversation: id, sender: userId, isDeleted: { $ne: true } },
+      { $set: { isDeleted: true, deletedAt: new Date() } }
+    );
+
+    return res.json({ success: true, message: 'Your messages were deleted', data: { modifiedCount: result.modifiedCount } });
+  } catch (error) {
+    console.error('Delete my messages error:', error);
+    return res.status(500).json({ success: false, message: 'Server error', error: error.message });
+  }
+};
+
+// Append export for the new controller at the bottom to avoid changing existing exports above
+module.exports.deleteMyMessagesInConversation = deleteMyMessagesInConversation;
 
