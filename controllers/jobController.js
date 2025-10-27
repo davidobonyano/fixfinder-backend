@@ -230,7 +230,7 @@ const applyToJob = async (req, res) => {
         jobId: job._id,
         professionalId
       }
-    });
+    }, req);
 
     res.json({
       success: true,
@@ -302,7 +302,7 @@ const acceptApplication = async (req, res) => {
       data: {
         jobId: job._id
       }
-    });
+    }, req);
 
     res.json({
       success: true,
@@ -359,7 +359,7 @@ const completeJob = async (req, res) => {
       data: {
         jobId: job._id
       }
-    });
+    }, req);
 
     res.json({
       success: true,
@@ -419,7 +419,7 @@ const cancelJob = async (req, res) => {
         data: {
           jobId: job._id
         }
-      });
+      }, req);
     }
 
     res.json({
@@ -512,10 +512,19 @@ const notifyRelevantProfessionals = async (job) => {
 };
 
 // Helper function to create notification
-const createNotification = async (notificationData) => {
+const createNotification = async (notificationData, req = null) => {
   try {
     const notification = new Notification(notificationData);
     await notification.save();
+    
+    // Emit Socket.IO notification
+    if (req && req.app) {
+      const io = req.app.get('io');
+      if (io) {
+        io.to(notificationData.recipient.toString()).emit('notification:new', notification);
+        console.log(`📤 Socket.IO notification emitted to user ${notificationData.recipient}`);
+      }
+    }
   } catch (error) {
     console.error('Create notification error:', error);
   }

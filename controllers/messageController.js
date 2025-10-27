@@ -317,14 +317,22 @@ const sendMessage = async (req, res) => {
     if (messageType === 'text' && content?.text) {
       messageContent.text = content.text;
     } else if (messageType === 'location' && content?.location) {
-      messageContent.location = content.location;
+      // Only include location if it has valid coordinates
+      if (content.location.lat !== undefined && content.location.lng !== undefined) {
+        messageContent.location = content.location;
+      }
     } else if (messageType === 'location_share' && content?.location) {
-      messageContent.location = content.location;
+      // Only include location if it has valid coordinates
+      if (content.location.lat !== undefined && content.location.lng !== undefined) {
+        messageContent.location = content.location;
+      }
     } else if (messageType === 'contact' && content?.contact) {
       messageContent.contact = content.contact;
-    } else if (content) {
-      // For other types, use the full content
-      messageContent = content;
+    } else if (content && messageType === 'text') {
+      // For text messages, only include text content
+      if (content.text) {
+        messageContent.text = content.text;
+      }
     }
 
     // Create message

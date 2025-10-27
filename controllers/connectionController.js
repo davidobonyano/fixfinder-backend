@@ -92,6 +92,15 @@ const sendConnectionRequest = async (req, res) => {
 
     await notification.save();
     console.log('✅ Notification created:', notification._id);
+    
+    // Emit Socket.IO notification
+    if (req.app) {
+      const io = req.app.get('io');
+      if (io) {
+        io.to(professional.user.toString()).emit('notification:new', notification);
+        console.log('📤 Socket.IO notification emitted');
+      }
+    }
 
     res.status(201).json({
       success: true,
@@ -164,6 +173,15 @@ const acceptConnectionRequest = async (req, res) => {
     });
 
     await notification.save();
+    
+    // Emit Socket.IO notification
+    if (req.app) {
+      const io = req.app.get('io');
+      if (io) {
+        io.to(connectionRequest.requester._id.toString()).emit('notification:new', notification);
+        console.log('📤 Socket.IO notification emitted');
+      }
+    }
 
     res.json({
       success: true,

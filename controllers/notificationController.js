@@ -188,6 +188,14 @@ const getNotificationCount = async (req, res) => {
   }
 };
 
+// Helper function to emit notification via Socket.IO
+const emitNotification = (io, notification) => {
+  if (io) {
+    io.to(notification.recipient.toString()).emit('notification:new', notification);
+    console.log(`📤 Socket.IO notification emitted to user ${notification.recipient}`);
+  }
+};
+
 // @desc    Create notification (internal use)
 // @route   POST /api/notifications
 // @access  Private (Admin/System)
@@ -221,6 +229,11 @@ const createNotification = async (req, res) => {
     });
 
     await notification.save();
+
+    // Emit Socket.IO notification if available
+    if (req.app.get('io')) {
+      emitNotification(req.app.get('io'), notification);
+    }
 
     res.status(201).json({
       success: true,

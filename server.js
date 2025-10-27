@@ -112,6 +112,10 @@ try {
   io.on("connection", async (socket) => {
     console.log(`User ${socket.userId} connected`);
 
+    // Join user to their own room for notifications
+    socket.join(socket.userId);
+    console.log(`User ${socket.userId} joined notification room`);
+
     // Presence: mark online
     try {
       await User.findByIdAndUpdate(socket.userId, { $set: { 'presence.isOnline': true } });
@@ -307,6 +311,11 @@ try {
       }
     });
   });
+  
+  // Export io for use in other modules
+  app.set('io', io);
 } catch (e) {
   console.log("Socket.IO init skipped", e?.message);
 }
+
+module.exports = app;
