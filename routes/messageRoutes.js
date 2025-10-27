@@ -10,7 +10,8 @@ const {
   markAsRead,
   shareLocation,
   stopLocationShare,
-  deleteMyMessagesInConversation
+  deleteMyMessagesInConversation,
+  deleteConversation
 } = require('../controllers/messageController');
 const { protect } = require('../middleware/authMiddleware');
 const { body } = require('express-validator');
@@ -89,6 +90,11 @@ router.delete('/:id', protect, deleteMessage);
 // @desc    Delete all my messages in a conversation
 // @access  Private
 router.delete('/conversations/:id/my-messages', protect, deleteMyMessagesInConversation);
+
+// @route   DELETE /api/messages/conversations/:id
+// @desc    Delete entire conversation
+// @access  Private
+router.delete('/conversations/:id', protect, deleteConversation);
 
 // @route   POST /api/messages/conversations/:id/location-share
 // @desc    Start sharing location in a conversation

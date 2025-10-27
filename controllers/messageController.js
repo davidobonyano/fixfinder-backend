@@ -24,9 +24,65 @@ const getConversations = async (req, res) => {
     .populate('job', 'title status')
     .sort({ lastMessageAt: -1 });
 
+    // Fix conversations with null user participants
+    const fixedConversations = [];
+    for (const conversation of conversations) {
+      let needsUpdate = false;
+      const updatedParticipants = [];
+      
+      for (const participant of conversation.participants) {
+        if (participant.user === null && participant.userType === 'professional') {
+          console.log(`🔧 Fixing professional participant with null user in conversation ${conversation._id}`);
+          
+          // Try to find the professional by the participant ID
+          const professional = await Professional.findById(participant._id);
+          
+          if (professional && professional.user) {
+            // Verify the user exists
+            const user = await User.findById(professional.user);
+            if (user) {
+              console.log(`✅ Found user for professional: ${user.name}`);
+              
+              // Update the participant with the correct user ID
+              updatedParticipants.push({
+                ...participant.toObject(),
+                user: professional.user
+              });
+              needsUpdate = true;
+            } else {
+              console.log(`❌ User not found: ${professional.user}`);
+              updatedParticipants.push(participant);
+            }
+          } else {
+            console.log(`❌ Professional not found or has no user reference`);
+            updatedParticipants.push(participant);
+          }
+        } else {
+          updatedParticipants.push(participant);
+        }
+      }
+      
+      if (needsUpdate) {
+        console.log(`📝 Updating conversation ${conversation._id} participants`);
+        await Conversation.findByIdAndUpdate(conversation._id, {
+          participants: updatedParticipants
+        });
+        
+        // Re-populate the conversation with the fixed data
+        const fixedConversation = await Conversation.findById(conversation._id)
+          .populate('participants.user', 'name email phone')
+          .populate('lastMessage')
+          .populate('job', 'title status');
+        
+        fixedConversations.push(fixedConversation);
+      } else {
+        fixedConversations.push(conversation);
+      }
+    }
+
     res.json({
       success: true,
-      data: conversations
+      data: fixedConversations
     });
   } catch (error) {
     console.error('Get conversations error:', error);
@@ -47,34 +103,83 @@ const createOrGetConversation = async (req, res) => {
     const userId = req.user.id;
     const userType = req.user.role === 'professional' ? 'professional' : 'user';
 
+    console.log('🔍 Creating conversation between:', userId, 'and', otherUserId);
+    console.log('🔍 User type:', userType);
+
+    // Verify both users exist
+    const currentUser = await User.findById(userId);
+    const otherUser = await User.findById(otherUserId);
+    
+    if (!currentUser) {
+      return res.status(404).json({
+        success: false,
+        message: 'Current user not found'
+      });
+    }
+    
+    if (!otherUser) {
+      return res.status(404).json({
+        success: false,
+        message: 'Other user not found'
+      });
+    }
+
+    console.log('✅ Both users found:', currentUser.name, 'and', otherUser.name);
+
     // Check if conversation already exists
+    console.log('🔍 Looking for existing conversation between users:', userId, 'and', otherUserId);
     let conversation = await Conversation.findOne({
-      participants: {
-        $all: [
-          { user: userId },
-          { user: otherUserId }
-        ]
-      },
+      'participants.user': { $all: [userId, otherUserId] },
       isActive: true
     })
     .populate('participants.user', 'name email phone')
     .populate('job', 'title status');
 
+    if (conversation) {
+      console.log('✅ Found existing conversation:', conversation._id);
+      console.log('📊 Conversation participants:', conversation.participants.map(p => ({
+        userId: p.user._id,
+        userName: p.user.name,
+        userType: p.userType
+      })));
+    } else {
+      console.log('📝 No existing conversation found, creating new one');
+    }
+
     if (!conversation) {
-      // Create new conversation
+      console.log('📝 Creating new conversation');
+      
+      // Determine the other user's type
+      const otherUserType = userType === 'professional' ? 'user' : 'professional';
+      
+      // Create new conversation with proper participant data
       conversation = new Conversation({
         participants: [
-          { user: userId, userType },
-          { user: otherUserId, userType: userType === 'professional' ? 'user' : 'professional' }
+          { 
+            user: userId, 
+            userType: userType 
+          },
+          { 
+            user: otherUserId, 
+            userType: otherUserType 
+          }
         ],
         job: jobId || null
       });
 
       await conversation.save();
+      console.log('✅ Conversation saved:', conversation._id);
+      
+      // Populate the user data
       await conversation.populate('participants.user', 'name email phone');
+      
       if (jobId) {
         await conversation.populate('job', 'title status');
       }
+      
+      console.log('✅ Conversation populated:', conversation.participants);
+    } else {
+      console.log('✅ Found existing conversation:', conversation._id);
     }
 
     res.json({
@@ -613,6 +718,40 @@ const deleteMyMessagesInConversation = async (req, res) => {
   }
 };
 
+// @desc    Delete entire conversation
+// @route   DELETE /api/messages/conversations/:id
+// @access  Private
+const deleteConversation = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user.id;
+
+    // Find the conversation
+    const conversation = await Conversation.findById(id);
+    if (!conversation) {
+      return res.status(404).json({ success: false, message: 'Conversation not found' });
+    }
+
+    // Check if user is a participant
+    const isParticipant = conversation.participants.some(p => p.user.toString() === userId);
+    if (!isParticipant) {
+      return res.status(403).json({ success: false, message: 'Not authorized to delete this conversation' });
+    }
+
+    // Delete all messages in the conversation
+    await Message.deleteMany({ conversation: id });
+
+    // Delete the conversation
+    await Conversation.findByIdAndDelete(id);
+
+    return res.json({ success: true, message: 'Conversation deleted successfully' });
+  } catch (error) {
+    console.error('Delete conversation error:', error);
+    return res.status(500).json({ success: false, message: 'Server error', error: error.message });
+  }
+};
+
 // Append export for the new controller at the bottom to avoid changing existing exports above
 module.exports.deleteMyMessagesInConversation = deleteMyMessagesInConversation;
+module.exports.deleteConversation = deleteConversation;
 

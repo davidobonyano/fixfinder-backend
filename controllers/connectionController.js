@@ -2,6 +2,8 @@ const Connection = require('../models/Connection');
 const Notification = require('../models/Notification');
 const User = require('../models/User');
 const Professional = require('../models/Professional');
+const Conversation = require('../models/Conversation');
+const Message = require('../models/Message');
 
 // Send connection request
 const sendConnectionRequest = async (req, res) => {
@@ -339,7 +341,11 @@ const removeConnection = async (req, res) => {
     const { connectionId } = req.params;
     const userId = req.user.id;
 
-    const connection = await Connection.findById(connectionId);
+    // Populate the connection to get user details
+    const connection = await Connection.findById(connectionId)
+      .populate('requester', '_id')
+      .populate('professional', 'user');
+    
     if (!connection) {
       return res.status(404).json({
         success: false,
@@ -347,16 +353,76 @@ const removeConnection = async (req, res) => {
       });
     }
 
+    // Get the actual user IDs involved
+    const requesterUserId = connection.requester._id.toString();
+    // The professional object has a 'user' field that references the User
+    let professionalUserId = null;
+    
+    if (connection.professional && connection.professional.user) {
+      professionalUserId = connection.professional.user.toString();
+    }
+
     // Check if user is part of this connection
-    if (connection.requester.toString() !== userId && connection.professional.toString() !== userId) {
+    const isRequester = requesterUserId === userId;
+    const isProfessional = professionalUserId === userId;
+    
+    if (!isRequester && !isProfessional) {
       return res.status(403).json({
         success: false,
         message: 'Not authorized to remove this connection'
       });
     }
 
+    // Delete the connection
     await Connection.findByIdAndDelete(connectionId);
+    console.log('✅ Connection deleted:', connectionId);
 
+    // Delete all conversations and messages between these users
+    try {
+      if (professionalUserId) {
+        // Find all conversations involving both users
+        const conversations = await Conversation.find({
+          $or: [
+            // Conversations where requester is in participants
+            {
+              'participants.user': requesterUserId
+            },
+            // Conversations where professional user is in participants
+            {
+              'participants.user': professionalUserId
+            }
+          ]
+        });
+
+        // Filter conversations to only those with BOTH users
+        const conversationsWithBoth = conversations.filter(conv => {
+          const participantUserIds = conv.participants
+            .map(p => p && p.user ? p.user.toString() : null)
+            .filter(id => id !== null);
+          return participantUserIds.includes(requesterUserId) && participantUserIds.includes(professionalUserId);
+        });
+
+        console.log(`🗑️ Found ${conversationsWithBoth.length} conversations to delete`);
+
+        // Delete all messages in these conversations
+        for (const conv of conversationsWithBoth) {
+          await Message.deleteMany({ conversation: conv._id });
+        }
+
+        // Delete the conversations
+        await Conversation.deleteMany({
+          _id: { $in: conversationsWithBoth.map(c => c._id) }
+        });
+
+        console.log('✅ Conversations and messages deleted');
+      } else {
+        console.log('⚠️ Could not find professional user ID, skipping conversation deletion');
+      }
+    } catch (error) {
+      console.error('❌ Error deleting conversations:', error);
+      // Continue even if conversation deletion fails
+    }
+    
     res.json({
       success: true,
       message: 'Connection removed successfully'
