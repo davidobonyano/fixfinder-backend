@@ -82,7 +82,8 @@ const jobSchema = new mongoose.Schema({
       'in_progress',
       'completed_by_pro',
       'completed_by_user',
-      'closed'
+      'closed',
+      'cancelled'
     ],
     default: 'posted'
   },

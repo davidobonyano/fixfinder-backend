@@ -441,7 +441,13 @@ const cancelJob = async (req, res) => {
 
     // Check authorization
     const isClient = job.client.toString() === userId;
-    const isProfessional = job.professional && job.professional.toString() === userId;
+    let isProfessional = false;
+    if (job.professional) {
+      const proByUser = await Professional.findOne({ user: userId }).select('_id');
+      if (proByUser && job.professional.toString() === proByUser._id.toString()) {
+        isProfessional = true;
+      }
+    }
 
     if (!isClient && !isProfessional) {
       return res.status(403).json({
@@ -453,6 +459,7 @@ const cancelJob = async (req, res) => {
     job.status = 'Cancelled';
     job.cancelledAt = new Date();
     job.cancellationReason = reason;
+    job.lifecycleState = 'cancelled';
     await job.save();
 
     // Notify the other party
@@ -469,9 +476,29 @@ const cancelJob = async (req, res) => {
       }, req);
     }
 
+    // Socket: broadcast update to conversation room
+    if (req && req.app) {
+      const io = req.app.get('io');
+      if (io && job.conversation) {
+        io.to(job.conversation.toString()).emit('job:update', { conversationId: job.conversation.toString(), job });
+        // Also emit to user-level rooms for both participants
+        try {
+          const clientUserId = job.client?.toString();
+          let proUserId = null;
+          if (job.professional) {
+            const proDoc = await Professional.findById(job.professional).select('user');
+            proUserId = proDoc?.user ? proDoc.user.toString() : null;
+          }
+          if (clientUserId) io.to(clientUserId).emit('job:update', { conversationId: job.conversation?.toString(), job });
+          if (proUserId) io.to(proUserId).emit('job:update', { conversationId: job.conversation?.toString(), job });
+        } catch (_) {}
+      }
+    }
+
     res.json({
       success: true,
-      message: 'Job cancelled successfully'
+      message: 'Job cancelled successfully',
+      data: job
     });
   } catch (error) {
     console.error('Cancel job error:', error);
@@ -591,6 +618,23 @@ const createJobRequestInChat = async (req, res) => {
       data: { jobId: job._id, conversationId }
     }, req);
 
+    // Socket: broadcast update to conversation room
+    if (req && req.app) {
+      const io = req.app.get('io');
+      if (io) {
+        if (job.conversation) {
+          io.to(job.conversation.toString()).emit('job:update', { conversationId: job.conversation.toString(), job });
+        }
+        // Also emit to user-level rooms for both participants
+        try {
+          const clientUserId = userId?.toString();
+          const proUserId = professional.user?.toString();
+          if (clientUserId) io.to(clientUserId).emit('job:update', { conversationId: job.conversation?.toString(), job });
+          if (proUserId) io.to(proUserId).emit('job:update', { conversationId: job.conversation?.toString(), job });
+        } catch (_) {}
+      }
+    }
+
     return res.status(201).json({ success: true, data: job });
   } catch (error) {
     console.error('createJobRequestInChat error:', error);
@@ -631,6 +675,14 @@ const acceptJobRequest = async (req, res) => {
       data: { jobId: job._id }
     }, req);
 
+    // Socket: broadcast update to conversation room
+    if (req && req.app) {
+      const io = req.app.get('io');
+      if (io && job.conversation) {
+        io.to(job.conversation.toString()).emit('job:update', { conversationId: job.conversation.toString(), job });
+      }
+    }
+
     return res.json({ success: true, message: 'Job accepted', data: job });
   } catch (error) {
     console.error('acceptJobRequest error:', error);
@@ -663,6 +715,14 @@ const proMarkCompleted = async (req, res) => {
       message: `Pro marked the job "${job.title}" as completed. Please confirm.`,
       data: { jobId: job._id }
     }, req);
+
+    // Socket: broadcast update to conversation room
+    if (req && req.app) {
+      const io = req.app.get('io');
+      if (io && job.conversation) {
+        io.to(job.conversation.toString()).emit('job:update', { conversationId: job.conversation.toString(), job });
+      }
+    }
 
     return res.json({ success: true, message: 'Marked completed by pro', data: job });
   } catch (error) {
@@ -699,6 +759,14 @@ const confirmJobCompletion = async (req, res) => {
       message: `The job "${job.title}" has been confirmed completed.`,
       data: { jobId: job._id }
     }, req);
+
+    // Socket: broadcast update to conversation room
+    if (req && req.app) {
+      const io = req.app.get('io');
+      if (io && job.conversation) {
+        io.to(job.conversation.toString()).emit('job:update', { conversationId: job.conversation.toString(), job });
+      }
+    }
 
     return res.json({ success: true, message: 'Job confirmed and closed', data: job });
   } catch (error) {

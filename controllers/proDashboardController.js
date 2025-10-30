@@ -1,6 +1,7 @@
 const Job = require('../models/Job');
 const Connection = require('../models/Connection');
 const Review = require('../models/Review');
+const Professional = require('../models/Professional');
 
 exports.getOverview = async (req, res) => {
   try {
@@ -98,6 +99,38 @@ exports.getAnalytics = async (req, res) => {
   } catch (e) {
     console.error('Pro Analytics error', e);
     res.status(500).json({ success: false, message: 'Failed to load analytics' });
+  }
+};
+
+// List jobs for the professional (by current user)
+exports.getMyJobsForPro = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { status } = req.query;
+
+    // Map user -> professional id
+    const pro = await Professional.findOne({ user: userId }).select('_id');
+    if (!pro) return res.status(404).json({ success: false, message: 'Professional profile not found' });
+
+    const query = { professional: pro._id };
+    if (status) query.status = status;
+
+    const jobs = await Job.find(query)
+      .populate('client', 'name email phone')
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const counts = await Job.aggregate([
+      { $match: { professional: pro._id } },
+      { $group: { _id: '$status', count: { $sum: 1 } } }
+    ]);
+
+    const byStatus = counts.reduce((acc, c) => { acc[c._id] = c.count; return acc; }, {});
+
+    res.json({ success: true, data: { jobs, counts: byStatus, professionalId: pro._id } });
+  } catch (e) {
+    console.error('Pro getMyJobs error', e);
+    res.status(500).json({ success: false, message: 'Failed to load pro jobs' });
   }
 };
 
