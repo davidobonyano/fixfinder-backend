@@ -11,7 +11,9 @@ const {
   shareLocation,
   stopLocationShare,
   deleteMyMessagesInConversation,
-  deleteConversation
+  deleteConversation,
+  deleteAllMessagesForMe,
+  deleteConversationForMe
 } = require('../controllers/messageController');
 const { protect } = require('../middleware/authMiddleware');
 const { body } = require('express-validator');
@@ -90,6 +92,16 @@ router.delete('/:id', protect, deleteMessage);
 // @desc    Delete all my messages in a conversation
 // @access  Private
 router.delete('/conversations/:id/my-messages', protect, deleteMyMessagesInConversation);
+
+// @route   DELETE /api/messages/conversations/:id/all-for-me
+// @desc    Delete all messages for the authenticated user in a conversation
+// @access  Private
+router.delete('/conversations/:id/all-for-me', protect, deleteAllMessagesForMe);
+
+// @route   DELETE /api/messages/conversations/:id/for-me
+// @desc    Delete entire conversation for the authenticated user
+// @access  Private
+router.delete('/conversations/:id/for-me', protect, deleteConversationForMe);
 
 // @route   DELETE /api/messages/conversations/:id
 // @desc    Delete entire conversation

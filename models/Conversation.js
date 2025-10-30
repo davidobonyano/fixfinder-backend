@@ -52,7 +52,12 @@ const conversationSchema = new mongoose.Schema({
   archivedAt: {
     user: Date,
     professional: Date
-  }
+  },
+  hiddenFor: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    default: []
+  }]
 }, {
   timestamps: true
 });

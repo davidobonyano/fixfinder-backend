@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const Message = require('../models/Message');
 const Conversation = require('../models/Conversation');
 const User = require('../models/User');
@@ -13,11 +14,16 @@ const { validationResult } = require('express-validator');
 const getConversations = async (req, res) => {
   try {
     const userId = req.user.id;
+    const userObjectId = new mongoose.Types.ObjectId(userId);
     const userType = req.user.role === 'professional' ? 'professional' : 'user';
 
     const conversations = await Conversation.find({
       'participants.user': userId,
-      isActive: true
+      isActive: true,
+      $or: [
+        { hiddenFor: { $exists: false } },
+        { hiddenFor: { $nin: [userObjectId] } }
+      ]
     })
     .populate('participants.user', 'name email phone')
     .populate('lastMessage')
@@ -171,13 +177,20 @@ const createOrGetConversation = async (req, res) => {
       console.log('✅ Conversation saved:', conversation._id);
       
       // Populate the user data
-      await conversation.populate('participants.user', 'name email phone');
+      await conversation.populate('participants.user', 'name email phone profilePicture avatarUrl'); // Added profilePicture and avatarUrl
       
       if (jobId) {
         await conversation.populate('job', 'title status');
       }
       
-      console.log('✅ Conversation populated:', conversation.participants);
+      // Notify the other user that a new conversation has been created
+      const io = req.app.get('io');
+      if (io) {
+        // The full conversation object is sent so the receiver's UI can update
+        io.to(otherUserId).emit('new_conversation', conversation);
+        console.log(`✅ Emitted 'new_conversation' event to user ${otherUserId}`);
+      }
+
     } else {
       console.log('✅ Found existing conversation:', conversation._id);
     }
@@ -205,6 +218,11 @@ const getMessages = async (req, res) => {
     const { page = 1, limit = 50 } = req.query;
     const userId = req.user.id;
 
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ success: false, message: "Invalid user ID" });
+    }
+    const userObjectId = new mongoose.Types.ObjectId(userId);
+
     // Verify user is part of the conversation
     const conversation = await Conversation.findById(id);
     if (!conversation) {
@@ -227,7 +245,11 @@ const getMessages = async (req, res) => {
 
     const messages = await Message.find({
       conversation: id,
-      isDeleted: false
+      isDeleted: false,
+      $or: [
+        { hiddenFor: { $exists: false } },
+        { hiddenFor: { $ne: userObjectId } }
+      ]
     })
     .populate('sender', 'name email')
     .populate('replyTo')
@@ -680,20 +702,6 @@ const stopLocationShare = async (req, res) => {
   }
 };
 
-module.exports = {
-  getConversations,
-  createOrGetConversation,
-  getMessages,
-  sendMessage,
-  editMessage,
-  deleteMessage,
-  markAsRead,
-  shareLocation,
-  stopLocationShare,
-  // New export added below
-};
-
-
 // @desc    Delete all my messages in a conversation (soft delete)
 // @route   DELETE /api/messages/conversations/:id/my-messages
 // @access  Private
@@ -746,10 +754,10 @@ const deleteConversation = async (req, res) => {
       return res.status(403).json({ success: false, message: 'Not authorized to delete this conversation' });
     }
 
-    // Delete all messages in the conversation
+    // Delete all messages in the conversation (for both users)
     await Message.deleteMany({ conversation: id });
 
-    // Delete the conversation
+    // Delete the conversation globally
     await Conversation.findByIdAndDelete(id);
 
     return res.json({ success: true, message: 'Conversation deleted successfully' });
@@ -759,7 +767,68 @@ const deleteConversation = async (req, res) => {
   }
 };
 
-// Append export for the new controller at the bottom to avoid changing existing exports above
-module.exports.deleteMyMessagesInConversation = deleteMyMessagesInConversation;
-module.exports.deleteConversation = deleteConversation;
+async function deleteAllMessagesForMe(req, res) {
+  const userId = req.user && (req.user._id || req.user.id);
+  const conversationId = req.params.id;
+  if (!userId || !conversationId) return res.status(400).json({ success: false, message: 'Missing user or conversation' });
+
+  try {
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ success: false, message: "Invalid user ID" });
+    }
+    const userObjectId = new mongoose.Types.ObjectId(userId);
+    console.log('Deleting all messages for me. Conversation:', conversationId, 'userId:', userId, 'as ObjectId:', userObjectId);
+
+    // Hide all messages in this conversation for the user
+    const updateResult = await Message.updateMany(
+      { conversation: conversationId, hiddenFor: { $ne: userObjectId } },
+      { $push: { hiddenFor: userObjectId } }
+    );
+    console.log('Messages updated:', updateResult.modifiedCount);
+    // Fetch a sample to check what hiddenFor looks like
+    const sample = await Message.findOne({ conversation: conversationId, hiddenFor: userObjectId });
+    console.log('Sample updated message:', sample);
+    return res.json({ success: true });
+  } catch (err) {
+    console.error('Error in deleteAllMessagesForMe:', err);
+    return res.status(500).json({ success: false, message: 'Server error' });
+  }
+}
+
+async function deleteConversationForMe(req, res) {
+  const userId = req.user && (req.user._id || req.user.id);
+  const conversationId = req.params.id;
+  if (!userId || !conversationId) return res.status(400).json({ success: false, message: 'Missing user/conversation' });
+  try {
+    const mongoose = require('mongoose');
+    const userObjectId = new mongoose.Types.ObjectId(userId);
+    // Only add userId if not already present
+    const updated = await Conversation.findByIdAndUpdate(
+      conversationId,
+      { $addToSet: { hiddenFor: userObjectId } },
+      { new: true }
+    );
+    if (!updated) return res.status(404).json({ success: false, message: 'Conversation not found' });
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Error in deleteConversationForMe:', err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+}
+
+module.exports = {
+  getConversations,
+  createOrGetConversation,
+  getMessages,
+  sendMessage,
+  editMessage,
+  deleteMessage,
+  markAsRead,
+  shareLocation,
+  stopLocationShare,
+  deleteMyMessagesInConversation,
+  deleteConversation,
+  deleteAllMessagesForMe,
+  deleteConversationForMe,
+};
 

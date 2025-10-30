@@ -43,6 +43,15 @@ const userSchema = new mongoose.Schema(
       type: String,
       trim: true,
     },
+    location: {
+      latitude: { type: Number },
+      longitude: { type: Number },
+      city: { type: String, trim: true },
+      state: { type: String, trim: true },
+      country: { type: String, trim: true },
+      address: { type: String, trim: true },
+      lastUpdated: { type: Date }
+    },
     emailVerification: {
       isVerified: { type: Boolean, default: false },
       token: { type: String },
@@ -88,6 +97,9 @@ userSchema.methods.toSafeJSON = function () {
   delete obj.password;
   return obj;
 };
+
+// Add 2D sphere index for location queries
+userSchema.index({ 'location.latitude': 1, 'location.longitude': 1 });
 
 module.exports = mongoose.model("User", userSchema);
 

@@ -55,6 +55,7 @@ app.use("/api/notifications", require("./routes/notificationRoutes"));
 app.use("/api/users", require("./routes/userRoutes"));
 app.use("/api/connections", require("./routes/connectionRoutes"));
 app.use("/api/pro-dashboard", require("./routes/proDashboardRoutes"));
+app.use("/api/location", require("./routes/locationRoutes"));
 
 // Error handler
 app.use(errorHandler);

@@ -6,8 +6,11 @@ const professionalSchema = new mongoose.Schema(
     name: { type: String, required: true, trim: true },
     category: { type: String, required: true, trim: true },
     city: { type: String, required: true, trim: true },
+    state: { type: String, trim: true },
+    country: { type: String, trim: true },
     location: {
       address: { type: String, trim: true },
+      neighbourhood: { type: String, trim: true },
       coordinates: {
         lat: { type: Number },
         lng: { type: Number }

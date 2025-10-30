@@ -4,6 +4,7 @@ const Professional = require('../models/Professional');
 const Notification = require('../models/Notification');
 const { uploadToCloudinary } = require('../config/cloudinary');
 const { validationResult } = require('express-validator');
+const { calculateDistance } = require('../utils/locationService');
 
 // @desc    Create a new job
 // @route   POST /api/jobs
@@ -116,60 +117,105 @@ const getMyJobs = async (req, res) => {
 // @access  Private (Professional only)
 const getJobFeed = async (req, res) => {
   try {
-    const { category, city, state, urgency, page = 1, limit = 10 } = req.query;
-    const professionalId = req.user.id;
+    const { q, service, category, city, state, urgency, scope = 'nearby', latitude, longitude, page = 1, limit = 10 } = req.query;
+    const userId = req.user.id;
 
-    // Get professional's details
-    const professional = await Professional.findById(professionalId);
+    // Get professional's details (by professional id or by user id)
+    let professional = await Professional.findById(userId);
     if (!professional) {
-      return res.status(404).json({
-        success: false,
-        message: 'Professional not found'
-      });
+      professional = await Professional.findOne({ user: userId });
+    }
+    if (!professional) {
+      return res.status(404).json({ success: false, message: 'Professional not found' });
     }
 
-    let query = { 
-      status: 'Pending',
-      isActive: true,
-      client: { $ne: professionalId } // Exclude own jobs
+    // Get user location for proximity-based sorting
+    const user = await User.findById(userId).select('location');
+    let userLat = latitude ? parseFloat(latitude) : user.location?.latitude;
+    let userLon = longitude ? parseFloat(longitude) : user.location?.longitude;
+    
+    let query = {
+      status: { $in: ['Pending', 'Open'] },
+      isActive: { $ne: false },
+      client: { $ne: userId }
     };
 
-    // Filter by professional's category
-    if (professional.category) {
-      query.category = professional.category;
+    // Filter by category ONLY if explicitly provided via query
+    const preferredCategory = (service && service.trim()) || (category && category.trim());
+    if (preferredCategory) {
+      query.category = preferredCategory;
+    }
+
+    // Apply search (title/description)
+    if (q && q.trim()) {
+      const regex = new RegExp(q.trim(), 'i');
+      query.$or = [{ title: regex }, { description: regex }];
     }
 
     // Filter by location
-    if (city) {
-      query['location.city'] = city;
-    }
-    if (state) {
-      query['location.state'] = state;
+    if (city) query['location.city'] = city;
+    if (state) query['location.state'] = state;
+
+    // If scope=all, do not restrict by professional's location by default
+    if (scope !== 'all') {
+      if (!city && !state) {
+        const proCity = professional.location && (professional.location.city || professional.city);
+        const proState = professional.location && (professional.location.state || professional.state);
+        if (proState) query['location.state'] = proState;
+      }
     }
 
     // Filter by urgency
-    if (urgency) {
-      query.urgency = urgency;
+    if (urgency) query.urgency = urgency;
+
+    // Get all matching jobs
+    let jobs = await Job.find(query)
+      .populate('client', 'name email phone')
+      .lean();
+
+    // Calculate distance and sort by proximity if user has location
+    if (userLat && userLon && scope !== 'all') {
+      jobs = jobs
+        .map(job => {
+          const jobLat = job.location?.coordinates?.lat;
+          const jobLon = job.location?.coordinates?.lng;
+          
+          if (jobLat && jobLon) {
+            const distance = calculateDistance(userLat, userLon, jobLat, jobLon);
+            return { ...job, distance };
+          }
+          return { ...job, distance: Infinity };
+        })
+        .sort((a, b) => {
+          // Prioritize urgent jobs, then by distance
+          if (a.urgency === 'Urgent' && b.urgency !== 'Urgent') return -1;
+          if (b.urgency === 'Urgent' && a.urgency !== 'Urgent') return 1;
+          return a.distance - b.distance;
+        });
+    } else {
+      // Sort by urgency and date
+      jobs.sort((a, b) => {
+        if (a.urgency === 'Urgent' && b.urgency !== 'Urgent') return -1;
+        if (b.urgency === 'Urgent' && a.urgency !== 'Urgent') return 1;
+        return new Date(b.createdAt) - new Date(a.createdAt);
+      });
     }
 
-    const jobs = await Job.find(query)
-      .populate('client', 'name email phone')
-      .sort({ urgency: -1, createdAt: -1 })
-      .limit(limit * 1)
-      .skip((page - 1) * limit);
-
-    const total = await Job.countDocuments(query);
+    // Apply pagination
+    const total = jobs.length;
+    const startIndex = (Number(page) - 1) * Number(limit);
+    const endIndex = startIndex + Number(limit);
+    const paginatedJobs = jobs.slice(startIndex, endIndex);
 
     res.json({
       success: true,
-      data: {
-        jobs,
-        pagination: {
-          current: parseInt(page),
-          pages: Math.ceil(total / limit),
-          total
-        }
-      }
+      data: paginatedJobs,
+      pagination: {
+        current: Number(page),
+        pages: Math.ceil(total / Number(limit)),
+        total
+      },
+      userLocation: userLat && userLon ? { latitude: userLat, longitude: userLon } : null
     });
   } catch (error) {
     console.error('Get job feed error:', error);
