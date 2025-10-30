@@ -2,6 +2,7 @@ const Job = require('../models/Job');
 const User = require('../models/User');
 const Professional = require('../models/Professional');
 const Notification = require('../models/Notification');
+const Conversation = require('../models/Conversation');
 const { uploadToCloudinary } = require('../config/cloudinary');
 const { validationResult } = require('express-validator');
 const { calculateDistance } = require('../utils/locationService');
@@ -530,6 +531,182 @@ const getJobDetails = async (req, res) => {
   }
 };
 
+// ---- Chat-driven lifecycle endpoints ----
+
+// @desc    User creates a job request from inside chat (must specify conversationId)
+// @route   POST /api/jobs/chat/:conversationId/request
+// @access  Private (User only)
+const createJobRequestInChat = async (req, res) => {
+  try {
+    const { conversationId } = req.params;
+    const userId = req.user.id;
+    const {
+      title,
+      description,
+      category,
+      location,
+      budget,
+      preferredDate,
+      preferredTime,
+      urgency
+    } = req.body || {};
+
+    const convo = await Conversation.findById(conversationId).populate('participants.user', 'name');
+    if (!convo) return res.status(404).json({ success: false, message: 'Conversation not found' });
+    const isParticipant = convo.participants.some(p => p.user && p.user._id.toString() === userId);
+    if (!isParticipant) return res.status(403).json({ success: false, message: 'Not a participant' });
+
+    // Determine the professional (by user linkage)
+    const other = convo.participants.find(p => p.user && p.user._id.toString() !== userId);
+    if (!other) return res.status(400).json({ success: false, message: 'Other participant not found' });
+    // Find Professional by user id
+    let professional = await Professional.findOne({ user: other.user._id });
+    if (!professional) return res.status(400).json({ success: false, message: 'Professional profile not found' });
+
+    const job = new Job({
+      title,
+      description,
+      category,
+      location,
+      budget,
+      preferredDate,
+      preferredTime,
+      urgency,
+      client: userId,
+      professional: professional._id,
+      conversation: conversationId,
+      status: 'Pending',
+      lifecycleState: 'job_requested'
+    });
+    await job.save();
+
+    // Link conversation to this job (optional early link)
+    await Conversation.findByIdAndUpdate(conversationId, { $set: { job: job._id } });
+
+    await createNotification({
+      recipient: professional._id,
+      type: 'job_requested',
+      title: 'New Job Request',
+      message: `Job request: ${title}`,
+      data: { jobId: job._id, conversationId }
+    }, req);
+
+    return res.status(201).json({ success: true, data: job });
+  } catch (error) {
+    console.error('createJobRequestInChat error:', error);
+    return res.status(500).json({ success: false, message: 'Server error', error: error.message });
+  }
+};
+
+// @desc    Pro accepts job request → in_progress
+// @route   POST /api/jobs/:id/accept-request
+// @access  Private (Professional only)
+const acceptJobRequest = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user.id;
+    const job = await Job.findById(id);
+    if (!job) return res.status(404).json({ success: false, message: 'Job not found' });
+
+    // Ensure this pro owns the professional profile linked on job
+    const proByUser = await Professional.findOne({ user: userId }).select('_id');
+    if (!proByUser || !job.professional || job.professional.toString() !== proByUser._id.toString()) {
+      return res.status(403).json({ success: false, message: 'Not authorized to accept this job' });
+    }
+
+    job.status = 'In Progress';
+    job.lifecycleState = 'in_progress';
+    await job.save();
+
+    // Ensure conversation link exists
+    if (job.conversation) {
+      await Conversation.findByIdAndUpdate(job.conversation, { $set: { job: job._id } });
+    }
+
+    await createNotification({
+      recipient: job.client,
+      type: 'job_accepted',
+      title: 'Job Accepted',
+      message: `Your job "${job.title}" has been accepted and is now in progress`,
+      data: { jobId: job._id }
+    }, req);
+
+    return res.json({ success: true, message: 'Job accepted', data: job });
+  } catch (error) {
+    console.error('acceptJobRequest error:', error);
+    return res.status(500).json({ success: false, message: 'Server error', error: error.message });
+  }
+};
+
+// @desc    Pro marks job completed (awaits user confirmation)
+// @route   POST /api/jobs/:id/complete-by-pro
+// @access  Private (Professional only)
+const proMarkCompleted = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user.id;
+    const job = await Job.findById(id);
+    if (!job) return res.status(404).json({ success: false, message: 'Job not found' });
+
+    const proByUser = await Professional.findOne({ user: userId }).select('_id');
+    if (!proByUser || !job.professional || job.professional.toString() !== proByUser._id.toString()) {
+      return res.status(403).json({ success: false, message: 'Not authorized to complete this job' });
+    }
+
+    job.lifecycleState = 'completed_by_pro';
+    await job.save();
+
+    await createNotification({
+      recipient: job.client,
+      type: 'job_completed_by_pro',
+      title: 'Work Completed',
+      message: `Pro marked the job "${job.title}" as completed. Please confirm.`,
+      data: { jobId: job._id }
+    }, req);
+
+    return res.json({ success: true, message: 'Marked completed by pro', data: job });
+  } catch (error) {
+    console.error('proMarkCompleted error:', error);
+    return res.status(500).json({ success: false, message: 'Server error', error: error.message });
+  }
+};
+
+// @desc    User confirms completion → closed; increments pro stats
+// @route   POST /api/jobs/:id/confirm-completion
+// @access  Private (User only)
+const confirmJobCompletion = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user.id;
+    const job = await Job.findById(id);
+    if (!job) return res.status(404).json({ success: false, message: 'Job not found' });
+    if (job.client.toString() !== userId) return res.status(403).json({ success: false, message: 'Not authorized' });
+
+    job.status = 'Completed';
+    job.lifecycleState = 'closed';
+    job.completedAt = new Date();
+    await job.save();
+
+    // Increment professional completion counter
+    if (job.professional) {
+      await Professional.findByIdAndUpdate(job.professional, { $inc: { completedJobs: 1 } });
+    }
+
+    await createNotification({
+      recipient: job.professional,
+      type: 'job_closed',
+      title: 'Job Closed',
+      message: `The job "${job.title}" has been confirmed completed.`,
+      data: { jobId: job._id }
+    }, req);
+
+    return res.json({ success: true, message: 'Job confirmed and closed', data: job });
+  } catch (error) {
+    console.error('confirmJobCompletion error:', error);
+    return res.status(500).json({ success: false, message: 'Server error', error: error.message });
+  }
+};
+
 // Helper function to notify relevant professionals
 const notifyRelevantProfessionals = async (job) => {
   try {
@@ -584,7 +761,11 @@ module.exports = {
   acceptApplication,
   completeJob,
   cancelJob,
-  getJobDetails
+  getJobDetails,
+  createJobRequestInChat,
+  acceptJobRequest,
+  proMarkCompleted,
+  confirmJobCompletion
 };
 
 

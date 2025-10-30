@@ -8,7 +8,11 @@ const {
   acceptApplication,
   completeJob,
   cancelJob,
-  getJobDetails
+  getJobDetails,
+  createJobRequestInChat,
+  acceptJobRequest,
+  proMarkCompleted,
+  confirmJobCompletion
 } = require('../controllers/jobController');
 const { protect } = require('../middleware/authMiddleware');
 const { body } = require('express-validator');
@@ -112,6 +116,16 @@ router.post('/:id/complete', protect, completeJob);
 // @desc    Cancel a job
 // @access  Private
 router.post('/:id/cancel', protect, cancelJob);
+
+// Chat-driven lifecycle
+// User creates a job request inside chat
+router.post('/chat/:conversationId/request', protect, createJobRequestInChat);
+// Pro accepts a job request → in_progress
+router.post('/:id/accept-request', protect, acceptJobRequest);
+// Pro marks completed (awaits confirmation)
+router.post('/:id/complete-by-pro', protect, proMarkCompleted);
+// User confirms completion → closed + stats
+router.post('/:id/confirm-completion', protect, confirmJobCompletion);
 
 module.exports = router;
 

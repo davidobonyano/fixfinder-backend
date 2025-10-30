@@ -71,6 +71,26 @@ const jobSchema = new mongoose.Schema({
     enum: ['Pending', 'In Progress', 'Completed', 'Cancelled'],
     default: 'Pending'
   },
+  lifecycleState: {
+    type: String,
+    enum: [
+      'posted',
+      'offer_pending',
+      'chat_open',
+      'job_requested',
+      'job_accepted',
+      'in_progress',
+      'completed_by_pro',
+      'completed_by_user',
+      'closed'
+    ],
+    default: 'posted'
+  },
+  conversation: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Conversation',
+    default: null
+  },
   client: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',

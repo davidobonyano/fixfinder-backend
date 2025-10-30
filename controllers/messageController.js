@@ -14,15 +14,15 @@ const { validationResult } = require('express-validator');
 const getConversations = async (req, res) => {
   try {
     const userId = req.user.id;
-    const userObjectId = new mongoose.Types.ObjectId(userId);
     const userType = req.user.role === 'professional' ? 'professional' : 'user';
+    const userObjectId = new mongoose.Types.ObjectId(userId);
 
     const conversations = await Conversation.find({
       'participants.user': userId,
       isActive: true,
       $or: [
         { hiddenFor: { $exists: false } },
-        { hiddenFor: { $nin: [userObjectId] } }
+        { hiddenFor: { $ne: userObjectId } }
       ]
     })
     .populate('participants.user', 'name email phone')
@@ -404,6 +404,16 @@ const sendMessage = async (req, res) => {
           messageId: message._id
         }
       });
+    }
+
+    // Unhide conversation for both participants on new activity
+    try {
+      const other = conversation.participants.find(p => p.user.toString() !== userId);
+      const pullIds = [new mongoose.Types.ObjectId(userId)];
+      if (other) pullIds.push(new mongoose.Types.ObjectId(other.user));
+      await Conversation.findByIdAndUpdate(id, { $pull: { hiddenFor: { $in: pullIds } } });
+    } catch (e) {
+      console.warn('Unhide conversation failed:', e?.message);
     }
 
     res.status(201).json({

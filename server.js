@@ -136,10 +136,30 @@ try {
     });
 
     // Handle sending messages
-    socket.on("send_message", (messageData) => {
+    socket.on("send_message", async (messageData) => {
       const { conversationId, ...message } = messageData;
       socket.to(conversationId).emit("receive_message", message);
       console.log(`Message sent in conversation ${conversationId}`);
+
+      // Also notify the other participant at user-level to refresh sidebar
+      try {
+        const Conversation = require('./models/Conversation');
+        const convo = await Conversation.findById(conversationId).select('participants');
+        if (convo && Array.isArray(convo.participants)) {
+          const other = convo.participants.find(p => String(p.user) !== String(socket.userId));
+          const receiverUserId = other && String(other.user);
+          if (receiverUserId) {
+            io.to(receiverUserId).emit('incoming_message', {
+              conversationId,
+              messageId: message?._id,
+              preview: message?.content?.text || undefined,
+              at: Date.now()
+            });
+          }
+        }
+      } catch (e) {
+        console.warn('incoming_message emit failed:', e?.message);
+      }
     });
 
     // Handle typing indicators
