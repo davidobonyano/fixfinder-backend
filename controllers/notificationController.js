@@ -9,6 +9,11 @@ const getNotifications = async (req, res) => {
     const { page = 1, limit = 20, unreadOnly = false } = req.query;
     const userId = req.user.id;
 
+    // Enforce safe limits: 1..50
+    const numericLimit = Number(limit) || 20;
+    const safeLimit = Math.min(Math.max(numericLimit, 1), 50);
+    const numericPage = Math.max(Number(page) || 1, 1);
+
     let query = { recipient: userId, isActive: true };
     if (unreadOnly === 'true') {
       query.isRead = false;
@@ -21,8 +26,8 @@ const getNotifications = async (req, res) => {
       .populate('data.connectionRequestId', 'status requester professional')
       .populate('data.requesterId', 'name email')
       .sort({ createdAt: -1 })
-      .limit(limit * 1)
-      .skip((page - 1) * limit);
+      .limit(safeLimit)
+      .skip((numericPage - 1) * safeLimit);
 
     const total = await Notification.countDocuments(query);
     const unreadCount = await Notification.countDocuments({
@@ -36,8 +41,8 @@ const getNotifications = async (req, res) => {
       data: {
         notifications,
         pagination: {
-          current: parseInt(page),
-          pages: Math.ceil(total / limit),
+          current: numericPage,
+          pages: Math.ceil(total / safeLimit),
           total
         },
         unreadCount
@@ -219,6 +224,16 @@ const createNotification = async (req, res) => {
       priority = 'medium'
     } = req.body;
 
+    // Enforce hard cap of 50 active notifications per user
+    const ACTIVE_CAP = 50;
+    const activeCount = await Notification.countDocuments({ recipient, isActive: true });
+    if (activeCount >= ACTIVE_CAP) {
+      return res.status(409).json({
+        success: false,
+        message: 'Notification inbox full. Please clear notifications to receive new ones.'
+      });
+    }
+
     const notification = new Notification({
       recipient,
       type,
@@ -250,13 +265,28 @@ const createNotification = async (req, res) => {
   }
 };
 
+// @desc    Delete all notifications for user (soft delete)
+// @route   DELETE /api/notifications
+// @access  Private
+const clearAllNotifications = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    await Notification.updateMany({ recipient: userId, isActive: true }, { isActive: false });
+    res.json({ success: true, message: 'All notifications cleared' });
+  } catch (error) {
+    console.error('Clear all notifications error:', error);
+    res.status(500).json({ success: false, message: 'Server error', error: error.message });
+  }
+};
+
 module.exports = {
   getNotifications,
   markAsRead,
   markAllAsRead,
   deleteNotification,
   getNotificationCount,
-  createNotification
+  createNotification,
+  clearAllNotifications
 };
 
 

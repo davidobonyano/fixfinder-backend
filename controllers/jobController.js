@@ -3,7 +3,8 @@ const User = require('../models/User');
 const Professional = require('../models/Professional');
 const Notification = require('../models/Notification');
 const Conversation = require('../models/Conversation');
-const { uploadToCloudinary } = require('../config/cloudinary');
+const { uploadToCloudinary, cloudinary } = require('../config/cloudinary');
+const { uploadBufferToCloudinary } = require('../utils');
 const { validationResult } = require('express-validator');
 const { calculateDistance } = require('../utils/locationService');
 
@@ -24,6 +25,7 @@ const createJob = async (req, res) => {
     const {
       title,
       description,
+      requirements,
       category,
       location,
       budget,
@@ -33,18 +35,66 @@ const createJob = async (req, res) => {
       media
     } = req.body;
 
+    // Normalize multipart dotted fields into nested objects when needed
+    const normalizedLocation = location && typeof location === 'object' ? location : {
+      address: req.body['location.address'] || undefined,
+      city: req.body['location.city'] || undefined,
+      state: req.body['location.state'] || undefined,
+      coordinates: (req.body['location.coordinates.lat'] && req.body['location.coordinates.lng']) ? {
+        lat: Number(req.body['location.coordinates.lat']),
+        lng: Number(req.body['location.coordinates.lng'])
+      } : undefined
+    };
+    const normalizedBudget = budget && typeof budget === 'object' ? budget : {
+      min: req.body['budget.min'] != null && req.body['budget.min'] !== '' ? Number(req.body['budget.min']) : undefined,
+      max: req.body['budget.max'] != null && req.body['budget.max'] !== '' ? Number(req.body['budget.max']) : undefined
+    };
+
     // Create job
+    // Handle optional single image upload from multipart
+    let finalMedia = [];
+    try {
+      const file = (Array.isArray(req.files) ? req.files : []).find(f => (f.mimetype || '').startsWith('image/'));
+      if (file && file.buffer) {
+        let result = null;
+        try {
+          result = await uploadBufferToCloudinary(file.buffer, {
+            folder: 'fixfinder/jobs',
+            resource_type: 'image',
+            timeout: 60000
+          });
+        } catch (e1) {
+          // Quick retry once on timeout/network glitches
+          if (String(e1?.message || '').toLowerCase().includes('timeout')) {
+            result = await uploadBufferToCloudinary(file.buffer, {
+              folder: 'fixfinder/jobs',
+              resource_type: 'image',
+              timeout: 60000
+            });
+          } else {
+            throw e1;
+          }
+        }
+        if (result?.secure_url) {
+          finalMedia.push({ type: 'image', url: result.secure_url, publicId: result.public_id });
+        }
+      }
+    } catch (e) {
+      console.warn('Job image upload skipped:', e?.message || e);
+    }
+
     const job = new Job({
       title,
       description,
+      requirements,
       category,
-      location,
-      budget,
+      location: normalizedLocation,
+      budget: normalizedBudget,
       preferredDate,
       preferredTime,
       urgency,
       client: req.user.id,
-      media: media || []
+      media: finalMedia.length ? finalMedia : (Array.isArray(media) ? media : [])
     });
 
     await job.save();
@@ -233,9 +283,9 @@ const getJobFeed = async (req, res) => {
 // @access  Private (Professional only)
 const applyToJob = async (req, res) => {
   try {
-    const { proposal, proposedPrice, estimatedDuration } = req.body;
+    const { proposal, proposedPrice, estimatedDuration, cvUrl } = req.body;
     const jobId = req.params.id;
-    const professionalId = req.user.id;
+    const professionalUserId = req.user.id;
 
     const job = await Job.findById(jobId);
     if (!job) {
@@ -245,10 +295,14 @@ const applyToJob = async (req, res) => {
       });
     }
 
+    // Map current user -> Professional profile
+    const pro = await Professional.findOne({ user: professionalUserId }).select('_id');
+    if (!pro) {
+      return res.status(404).json({ success: false, message: 'Professional profile not found' });
+    }
+
     // Check if already applied
-    const existingApplication = job.applications.find(
-      app => app.professional.toString() === professionalId
-    );
+    const existingApplication = job.applications.find(app => app.professional && app.professional.toString() === pro._id.toString());
 
     if (existingApplication) {
       return res.status(400).json({
@@ -257,12 +311,43 @@ const applyToJob = async (req, res) => {
       });
     }
 
+    // Handle optional CV file upload (field name: "cv")
+    let finalCvUrl = cvUrl || undefined;
+    let finalCvPublicId = undefined;
+    try {
+      const file = (Array.isArray(req.files) ? req.files : [])
+        .find(f => String(f.fieldname).toLowerCase() === 'cv');
+      if (file && file.buffer) {
+        // Validate type and size: PDF only, <= 10MB
+        const isPdf = (file.mimetype || '').toLowerCase() === 'application/pdf' || (file.originalname || '').toLowerCase().endsWith('.pdf');
+        const maxBytes = 2 * 1024 * 1024; // 2MB
+        if (!isPdf) {
+          return res.status(400).json({ success: false, message: 'Invalid CV format. Please upload a PDF file.' });
+        }
+        if (file.size && file.size > maxBytes) {
+          return res.status(400).json({ success: false, message: 'CV file too large. Max 2MB allowed.' });
+        }
+        // Accept PDFs and docs as raw resource type
+        const result = await uploadBufferToCloudinary(file.buffer, {
+          folder: 'fixfinder/cv',
+          resource_type: 'raw',
+          format: 'pdf'
+        });
+        finalCvUrl = result.secure_url || result.url;
+        finalCvPublicId = result.public_id;
+      }
+    } catch (e) {
+      console.warn('CV upload skipped:', e?.message || e);
+    }
+
     // Add application
     job.applications.push({
-      professional: professionalId,
+      professional: pro._id,
       proposal,
       proposedPrice,
-      estimatedDuration
+      estimatedDuration,
+      cvUrl: finalCvUrl,
+      cvPublicId: finalCvPublicId
     });
 
     await job.save();
@@ -275,7 +360,7 @@ const applyToJob = async (req, res) => {
       message: `A professional has applied to your job: ${job.title}`,
       data: {
         jobId: job._id,
-        professionalId
+        professionalId: pro._id
       }
     }, req);
 
@@ -326,10 +411,11 @@ const acceptApplication = async (req, res) => {
       });
     }
 
-    // Accept the application
+    // Accept the application and set professional
     application.status = 'Accepted';
     job.professional = application.professional;
-    job.status = 'In Progress';
+    // Do NOT start work yet; move lifecycle to chat_open and keep status Pending
+    job.lifecycleState = 'chat_open';
 
     // Reject other applications
     job.applications.forEach(app => {
@@ -345,15 +431,36 @@ const acceptApplication = async (req, res) => {
       recipient: application.professional,
       type: 'job_accepted',
       title: 'Job Application Accepted',
-      message: `Your application for "${job.title}" has been accepted!`,
+      message: `Your application for "${job.title}" has been accepted! Open chat to proceed.`,
       data: {
         jobId: job._id
       }
     }, req);
 
+    // Socket: emit job:update to participants
+    if (req && req.app) {
+      const io = req.app.get('io');
+      if (io) {
+        if (job.conversation) {
+          io.to(job.conversation.toString()).emit('job:update', { conversationId: job.conversation.toString(), job });
+        }
+        try {
+          const clientUserId = job.client?.toString();
+          let proUserId = null;
+          if (job.professional) {
+            const proDoc = await Professional.findById(job.professional).select('user');
+            proUserId = proDoc?.user ? proDoc.user.toString() : null;
+          }
+          if (clientUserId) io.to(clientUserId).emit('job:update', { conversationId: job.conversation?.toString(), job });
+          if (proUserId) io.to(proUserId).emit('job:update', { conversationId: job.conversation?.toString(), job });
+        } catch (_) {}
+      }
+    }
+
     res.json({
       success: true,
-      message: 'Application accepted successfully'
+      message: 'Application accepted. Open chat to proceed.',
+      data: job
     });
   } catch (error) {
     console.error('Accept application error:', error);
@@ -510,6 +617,61 @@ const cancelJob = async (req, res) => {
   }
 };
 
+// @desc    Delete a cancelled job (remove from lists)
+// @route   DELETE /api/jobs/:id
+// @access  Private (client or assigned pro)
+const deleteJob = async (req, res) => {
+  try {
+    const jobId = req.params.id;
+    const userId = req.user.id;
+    const job = await Job.findById(jobId);
+    if (!job) return res.status(404).json({ success: false, message: 'Job not found' });
+    if (job.status !== 'Cancelled') return res.status(400).json({ success: false, message: 'Only cancelled jobs can be deleted' });
+
+    // Auth: client or assigned professional user
+    let authorized = job.client.toString() === userId;
+    if (!authorized && job.professional) {
+      const proByUser = await Professional.findOne({ user: userId }).select('_id');
+      if (proByUser && job.professional.toString() === proByUser._id.toString()) {
+        authorized = true;
+      }
+    }
+    if (!authorized) return res.status(403).json({ success: false, message: 'Not authorized to delete this job' });
+
+    // Clear conversation link if set
+    if (job.conversation) {
+      await Conversation.findByIdAndUpdate(job.conversation, { $unset: { job: 1 } });
+    }
+
+    await Job.deleteOne({ _id: jobId });
+
+    // Emit to conversation and user rooms to clear header chips
+    if (req && req.app) {
+      const io = req.app.get('io');
+      if (io) {
+        if (job.conversation) {
+          io.to(job.conversation.toString()).emit('job:update', { conversationId: job.conversation.toString(), job: null });
+        }
+        try {
+          const clientUserId = job.client?.toString();
+          let proUserId = null;
+          if (job.professional) {
+            const proDoc = await Professional.findById(job.professional).select('user');
+            proUserId = proDoc?.user ? proDoc.user.toString() : null;
+          }
+          if (clientUserId) io.to(clientUserId).emit('job:update', { conversationId: job.conversation?.toString(), job: null });
+          if (proUserId) io.to(proUserId).emit('job:update', { conversationId: job.conversation?.toString(), job: null });
+        } catch (_) {}
+      }
+    }
+
+    return res.json({ success: true, message: 'Job deleted' });
+  } catch (error) {
+    console.error('deleteJob error:', error);
+    return res.status(500).json({ success: false, message: 'Server error', error: error.message });
+  }
+};
+
 // @desc    Get job details
 // @route   GET /api/jobs/:id
 // @access  Private
@@ -518,10 +680,10 @@ const getJobDetails = async (req, res) => {
     const jobId = req.params.id;
     const userId = req.user.id;
 
-    const job = await Job.findById(jobId)
+    let job = await Job.findById(jobId)
       .populate('client', 'name email phone')
-      .populate('professional', 'name category rating location phone')
-      .populate('applications.professional', 'name category rating location');
+      .populate('professional', 'name category rating location phone user')
+      .populate('applications.professional', 'name category rating location user');
 
     if (!job) {
       return res.status(404).json({
@@ -534,7 +696,7 @@ const getJobDetails = async (req, res) => {
     const isClient = job.client._id.toString() === userId;
     const isProfessional = job.professional && job.professional._id.toString() === userId;
     const hasApplied = job.applications.some(app => 
-      app.professional._id.toString() === userId
+      app.professional && app.professional._id && app.professional._id.toString() === userId
     );
 
     if (!isClient && !isProfessional && !hasApplied) {
@@ -544,9 +706,26 @@ const getJobDetails = async (req, res) => {
       });
     }
 
+    // Fallback enrichment: if any application has a missing Professional doc due to legacy user id storage
+    const jobObj = job.toObject();
+    if (Array.isArray(jobObj.applications)) {
+      for (let i = 0; i < jobObj.applications.length; i++) {
+        const app = jobObj.applications[i];
+        if (!app.professional || (!app.professional.name && !app.professional.user)) {
+          // Try map professional by user id equal to stored ObjectId
+          try {
+            const proDoc = await Professional.findOne({ user: app.professional }).select('name category rating location user');
+            if (proDoc) {
+              jobObj.applications[i].professional = proDoc.toObject();
+            }
+          } catch(_) {}
+        }
+      }
+    }
+
     res.json({
       success: true,
-      data: job
+      data: jobObj
     });
   } catch (error) {
     console.error('Get job details error:', error);
@@ -775,6 +954,170 @@ const confirmJobCompletion = async (req, res) => {
   }
 };
 
+// @desc    Get a signed CV URL for an application (short-lived)
+// @route   GET /api/jobs/:id/applications/:applicationId/cv-url
+// @access  Private (job client, pro applicant, assigned pro, or admin)
+const getApplicationCvUrl = async (req, res) => {
+  try {
+    const { id, applicationId } = req.params;
+    const userId = req.user.id;
+
+    const job = await Job.findById(id)
+      .populate('client', '_id')
+      .populate('professional', '_id user')
+      .populate('applications.professional', '_id user');
+    if (!job) return res.status(404).json({ success: false, message: 'Job not found' });
+
+    const application = job.applications.id(applicationId);
+    if (!application) return res.status(404).json({ success: false, message: 'Application not found' });
+
+    // Authorization: job client, assigned professional user, pro who applied, or admin
+    let isAuthorized = false;
+    if (job.client && job.client._id.toString() === userId) isAuthorized = true;
+    // Assigned pro user
+    if (!isAuthorized && job.professional) {
+      try {
+        const proAssigned = await Professional.findById(job.professional._id).select('user');
+        if (proAssigned?.user && proAssigned.user.toString() === userId) isAuthorized = true;
+      } catch (_) {}
+    }
+    // Applicant pro user
+    if (!isAuthorized && application.professional) {
+      try {
+        const proApplicant = await Professional.findById(application.professional._id).select('user');
+        if (proApplicant?.user && proApplicant.user.toString() === userId) isAuthorized = true;
+      } catch (_) {}
+    }
+    // Admin
+    if (!isAuthorized) {
+      try {
+        const adminUser = await User.findById(userId).select('role');
+        if (adminUser && adminUser.role === 'admin') isAuthorized = true;
+      } catch (_) {}
+    }
+
+    if (!isAuthorized) return res.status(403).json({ success: false, message: 'Not authorized' });
+
+    const publicId = application.cvPublicId;
+    const directUrl = application.cvUrl;
+    if (!publicId && !directUrl) {
+      return res.status(404).json({ success: false, message: 'No CV available for this application' });
+    }
+
+    // If publicId exists, generate private (signed) download URL; else fallback to stored URL
+    let url = directUrl;
+    if (publicId) {
+      const expiresAt = Math.floor(Date.now() / 1000) + 120; // 2 minutes
+      const baseId = String(publicId).replace(/\.[a-z0-9]+$/i, '');
+      // Derive file extension from stored direct url if possible
+      let ext = 'pdf';
+      try {
+        const m = (directUrl || '').match(/\.([a-z0-9]{2,5})(?:\?|#|$)/i);
+        if (m && m[1]) ext = m[1].toLowerCase();
+      } catch (_) {}
+      // 1) Try signed delivery URL for raw/upload assets, include format
+      try {
+        url = cloudinary.url(baseId, { resource_type: 'raw', secure: true, sign_url: true, format: ext });
+      } catch (e) {
+        console.warn('signed delivery url failed:', e?.message || e);
+      }
+      // 2) Fallback: private download URL (works for private/authenticated), include format
+      if (!url) {
+        try {
+          url = cloudinary.utils.private_download_url(baseId, ext, { resource_type: 'raw', expires_at: expiresAt });
+        } catch (e2) {
+          console.warn('private_download_url failed:', e2?.message || e2);
+        }
+      }
+      if (!url && !directUrl) {
+        return res.status(404).json({ success: false, message: 'CV asset not available' });
+      }
+      if (!url) url = directUrl; // last resort
+    }
+
+    return res.json({ success: true, url });
+  } catch (error) {
+    console.error('getApplicationCvUrl error:', error);
+    return res.status(500).json({ success: false, message: 'Server error', error: error.message });
+  }
+};
+
+
+// @desc    Admin: delete an application's CV file
+// @route   DELETE /api/jobs/:id/applications/:applicationId/cv
+// @access  Private (Admin only)
+const deleteApplicationCv = async (req, res) => {
+  try {
+    const { id, applicationId } = req.params;
+    const job = await Job.findById(id);
+    if (!job) return res.status(404).json({ success: false, message: 'Job not found' });
+    const app = job.applications.id(applicationId);
+    if (!app) return res.status(404).json({ success: false, message: 'Application not found' });
+
+    // Destroy on Cloudinary if we have a public id
+    if (app.cvPublicId) {
+      try {
+        await cloudinary.uploader.destroy(app.cvPublicId, { resource_type: 'raw' });
+      } catch (e) {
+        console.warn('Cloudinary destroy failed for CV:', e?.message || e);
+      }
+    }
+
+    app.cvUrl = undefined;
+    app.cvPublicId = undefined;
+    await job.save();
+
+    return res.json({ success: true, message: 'CV removed from application' });
+  } catch (error) {
+    console.error('deleteApplicationCv error:', error);
+    return res.status(500).json({ success: false, message: 'Server error', error: error.message });
+  }
+};
+
+// @desc    Delete a job application and its CV (if any)
+// @route   DELETE /api/jobs/:id/applications/:applicationId
+// @access  Private (job client or admin)
+const deleteJobApplication = async (req, res) => {
+  try {
+    const { id, applicationId } = req.params;
+    const userId = req.user.id;
+
+    const job = await Job.findById(id).populate('client', '_id');
+    if (!job) return res.status(404).json({ success: false, message: 'Job not found' });
+
+    // Authorization: job client or admin
+    let isAuthorized = job.client && job.client._id && job.client._id.toString() === userId;
+    if (!isAuthorized) {
+      try {
+        const user = await User.findById(userId).select('role');
+        if (user && user.role === 'admin') isAuthorized = true;
+      } catch (_) {}
+    }
+    if (!isAuthorized) return res.status(403).json({ success: false, message: 'Not authorized' });
+
+    const application = job.applications.id(applicationId);
+    if (!application) return res.status(404).json({ success: false, message: 'Application not found' });
+
+    // Remove CV from Cloudinary if present
+    if (application.cvPublicId) {
+      try {
+        await cloudinary.uploader.destroy(application.cvPublicId, { resource_type: 'raw' });
+      } catch (e) {
+        console.warn('Cloudinary destroy failed for CV during application delete:', e?.message || e);
+      }
+    }
+
+    // Remove application subdocument and save
+    application.deleteOne();
+    await job.save();
+
+    return res.json({ success: true, message: 'Application deleted' });
+  } catch (error) {
+    console.error('deleteJobApplication error:', error);
+    return res.status(500).json({ success: false, message: 'Server error', error: error.message });
+  }
+};
+
 // Helper function to notify relevant professionals
 const notifyRelevantProfessionals = async (job) => {
   try {
@@ -833,7 +1176,11 @@ module.exports = {
   createJobRequestInChat,
   acceptJobRequest,
   proMarkCompleted,
-  confirmJobCompletion
+  confirmJobCompletion,
+  deleteJob,
+  deleteApplicationCv,
+  getApplicationCvUrl,
+  deleteJobApplication
 };
 
 

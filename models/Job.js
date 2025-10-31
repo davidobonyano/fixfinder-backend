@@ -13,6 +13,11 @@ const jobSchema = new mongoose.Schema({
     trim: true,
     maxlength: [1000, 'Job description cannot exceed 1000 characters']
   },
+  requirements: {
+    type: String,
+    trim: true,
+    maxlength: [500, 'Requirements cannot exceed 500 characters']
+  },
   category: {
     type: String,
     required: [true, 'Service category is required'],
@@ -133,6 +138,12 @@ const jobSchema = new mongoose.Schema({
     estimatedDuration: {
       type: String,
       required: true
+    },
+    cvUrl: {
+      type: String
+    },
+    cvPublicId: {
+      type: String
     },
     status: {
       type: String,

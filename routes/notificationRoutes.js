@@ -6,7 +6,8 @@ const {
   markAllAsRead,
   deleteNotification,
   getNotificationCount,
-  createNotification
+  createNotification,
+  clearAllNotifications
 } = require('../controllers/notificationController');
 const { protect } = require('../middleware/authMiddleware');
 const { body } = require('express-validator');
@@ -72,6 +73,11 @@ router.put('/read-all', protect, markAllAsRead);
 // @desc    Delete notification
 // @access  Private
 router.delete('/:id', protect, deleteNotification);
+
+// @route   DELETE /api/notifications
+// @desc    Delete all notifications for current user
+// @access  Private
+router.delete('/', protect, clearAllNotifications);
 
 // @route   POST /api/notifications
 // @desc    Create notification (internal use)

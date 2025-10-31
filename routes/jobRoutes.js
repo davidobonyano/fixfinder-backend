@@ -12,10 +12,16 @@ const {
   createJobRequestInChat,
   acceptJobRequest,
   proMarkCompleted,
-  confirmJobCompletion
+  confirmJobCompletion,
+  deleteJob,
+  deleteApplicationCv,
+  getApplicationCvUrl,
+  deleteJobApplication
 } = require('../controllers/jobController');
 const { protect } = require('../middleware/authMiddleware');
+const { requireAdmin } = require('../middleware/roleMiddleware');
 const { body } = require('express-validator');
+const { upload } = require('../utils');
 
 // Validation middleware
 const createJobValidation = [
@@ -27,6 +33,11 @@ const createJobValidation = [
     .trim()
     .isLength({ min: 10, max: 1000 })
     .withMessage('Description must be between 10 and 1000 characters'),
+  body('requirements')
+    .optional({ nullable: true })
+    .trim()
+    .isLength({ max: 500 })
+    .withMessage('Requirements cannot exceed 500 characters'),
   body('category')
     .trim()
     .notEmpty()
@@ -80,7 +91,7 @@ const applyToJobValidation = [
 // @route   POST /api/jobs
 // @desc    Create a new job
 // @access  Private (User only)
-router.post('/', protect, createJobValidation, createJob);
+router.post('/', protect, upload.any(), createJobValidation, createJob);
 
 // @route   GET /api/jobs/my-jobs
 // @desc    Get all jobs for the authenticated user
@@ -98,9 +109,9 @@ router.get('/feed', protect, getJobFeed);
 router.get('/:id', protect, getJobDetails);
 
 // @route   POST /api/jobs/:id/apply
-// @desc    Apply to a job
+// @desc    Apply to a job (supports optional CV file upload as field "cv")
 // @access  Private (Professional only)
-router.post('/:id/apply', protect, applyToJobValidation, applyToJob);
+router.post('/:id/apply', protect, upload.any(), applyToJobValidation, applyToJob);
 
 // @route   POST /api/jobs/:id/accept/:applicationId
 // @desc    Accept a job application
@@ -126,6 +137,23 @@ router.post('/:id/accept-request', protect, acceptJobRequest);
 router.post('/:id/complete-by-pro', protect, proMarkCompleted);
 // User confirms completion → closed + stats
 router.post('/:id/confirm-completion', protect, confirmJobCompletion);
+
+// @route   DELETE /api/jobs/:id
+// @desc    Delete a cancelled job
+// @access  Private
+router.delete('/:id', protect, deleteJob);
+
+// Admin-only: remove an application's CV asset
+// @route   DELETE /api/jobs/:id/applications/:applicationId/cv
+// @access  Private (Admin)
+router.delete('/:id/applications/:applicationId/cv', protect, requireAdmin, deleteApplicationCv);
+
+// Signed CV URL for authorized viewers
+router.get('/:id/applications/:applicationId/cv-url', protect, getApplicationCvUrl);
+
+// Delete an application and its CV (job client or admin)
+router.delete('/:id/applications/:applicationId', protect, deleteJobApplication);
+
 
 module.exports = router;
 
