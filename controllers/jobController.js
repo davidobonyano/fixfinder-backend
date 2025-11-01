@@ -125,7 +125,7 @@ const createJob = async (req, res) => {
 // @access  Private
 const getMyJobs = async (req, res) => {
   try {
-    const { status, page = 1, limit = 10 } = req.query;
+    const { status, page = 1, limit = 100 } = req.query; // Increased default limit to 100
     const userId = req.user.id;
 
     let query = { client: userId };
@@ -133,12 +133,16 @@ const getMyJobs = async (req, res) => {
       query.status = status;
     }
 
+    console.log('📋 getMyJobs: Querying jobs for client:', userId, 'query:', query);
+
     const jobs = await Job.find(query)
       .populate('professional', 'name category rating location phone')
       .populate('applications.professional', 'name category rating location')
       .sort({ createdAt: -1 })
       .limit(limit * 1)
       .skip((page - 1) * limit);
+
+    console.log('✅ getMyJobs: Found', jobs.length, 'jobs');
 
     const total = await Job.countDocuments(query);
 
@@ -187,8 +191,21 @@ const getJobFeed = async (req, res) => {
     
     let query = {
       status: { $in: ['Pending', 'Open'] },
+      $nor: [
+        { status: 'Completed' },
+        { status: 'Cancelled' }
+      ],
       isActive: { $ne: false },
-      client: { $ne: userId }
+      client: { $ne: userId },
+      // Only include jobs still taking applications
+      $and: [
+        { $or: [ { professional: { $exists: false } }, { professional: null } ] },
+        { $or: [ { conversation: { $exists: false } }, { conversation: null } ] },
+        { lifecycleState: { $nin: ['in_progress','completed_by_pro','completed_by_user','closed','cancelled'] } },
+        { completed: { $ne: true } },
+        { isCompleted: { $ne: true } },
+        { completedAt: { $exists: false } }
+      ]
     };
 
     // Filter by category ONLY if explicitly provided via query
@@ -501,6 +518,19 @@ const completeJob = async (req, res) => {
 
     job.status = 'Completed';
     job.completedAt = new Date();
+    // Delete all applications and their CV files from Cloudinary since job is completed
+    if (job.applications && job.applications.length > 0) {
+      for (const app of job.applications) {
+        if (app.cvPublicId) {
+          try {
+            await cloudinary.uploader.destroy(app.cvPublicId, { resource_type: 'raw' });
+          } catch (e) {
+            console.warn('Cloudinary destroy failed for CV during job completion:', e?.message || e);
+          }
+        }
+      }
+    }
+    job.applications = [];
     await job.save();
 
     // Notify the other party
@@ -567,6 +597,19 @@ const cancelJob = async (req, res) => {
     job.cancelledAt = new Date();
     job.cancellationReason = reason;
     job.lifecycleState = 'cancelled';
+    // Delete all applications and their CV files from Cloudinary since job is cancelled
+    if (job.applications && job.applications.length > 0) {
+      for (const app of job.applications) {
+        if (app.cvPublicId) {
+          try {
+            await cloudinary.uploader.destroy(app.cvPublicId, { resource_type: 'raw' });
+          } catch (e) {
+            console.warn('Cloudinary destroy failed for CV during job cancellation:', e?.message || e);
+          }
+        }
+      }
+    }
+    job.applications = [];
     await job.save();
 
     // Notify the other party
@@ -924,6 +967,19 @@ const confirmJobCompletion = async (req, res) => {
     job.status = 'Completed';
     job.lifecycleState = 'closed';
     job.completedAt = new Date();
+    // Delete all applications and their CV files from Cloudinary since job is completed and closed
+    if (job.applications && job.applications.length > 0) {
+      for (const app of job.applications) {
+        if (app.cvPublicId) {
+          try {
+            await cloudinary.uploader.destroy(app.cvPublicId, { resource_type: 'raw' });
+          } catch (e) {
+            console.warn('Cloudinary destroy failed for CV during job closure:', e?.message || e);
+          }
+        }
+      }
+    }
+    job.applications = [];
     await job.save();
 
     // Increment professional completion counter

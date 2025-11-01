@@ -6,30 +6,57 @@ const Professional = require('../models/Professional');
 exports.getOverview = async (req, res) => {
   try {
     const userId = req.user.id;
+    
+    // Get professional ID from user ID
+    const proDoc = await Professional.findOne({ user: userId }).select('_id');
+    const professionalId = proDoc?._id || userId; // Fallback to userId if no professional found
 
     const [totalJobs, activeJobs, completedJobs] = await Promise.all([
-      Job.countDocuments({ professional: userId }),
-      Job.countDocuments({ professional: userId, status: 'in_progress' }),
-      Job.countDocuments({ professional: userId, status: 'completed' })
+      Job.countDocuments({ professional: professionalId }),
+      Job.countDocuments({ professional: professionalId, status: 'in_progress' }),
+      Job.countDocuments({ professional: professionalId, status: 'completed' })
     ]);
 
     const totalEarningsAgg = await Job.aggregate([
-      { $match: { professional: require('mongoose').Types.ObjectId.createFromHexString(userId), status: 'completed' } },
+      { $match: { professional: require('mongoose').Types.ObjectId.createFromHexString(String(professionalId)), status: 'completed' } },
       { $group: { _id: null, total: { $sum: { $ifNull: ['$budget', 0] } } } }
     ]);
     const totalEarnings = totalEarningsAgg[0]?.total || 0;
 
     const reviewAgg = await Review.aggregate([
-      { $match: { professional: require('mongoose').Types.ObjectId.createFromHexString(userId) } },
+      { $match: { professional: require('mongoose').Types.ObjectId.createFromHexString(String(professionalId)) } },
       { $group: { _id: null, rating: { $avg: { $ifNull: ['$rating', 0] } }, count: { $sum: 1 } } }
     ]);
 
     const rating = reviewAgg[0]?.rating || 0;
     const reviewCount = reviewAgg[0]?.count || 0;
+    
+    // Fetch recent reviews with populated user data
+    const recentReviews = await Review.find({ professional: professionalId })
+      .populate('user', 'name profilePicture avatarUrl')
+      .populate('jobId', 'title')
+      .sort({ createdAt: -1 })
+      .limit(10)
+      .lean();
 
     res.json({
       success: true,
-      data: { totalJobs, activeJobs, completedJobs, totalEarnings, rating, reviewCount }
+      data: { 
+        totalJobs, 
+        activeJobs, 
+        completedJobs, 
+        totalEarnings, 
+        averageRating: rating, 
+        totalReviews: reviewCount,
+        recentReviews: recentReviews.map(r => ({
+          _id: r._id,
+          rating: r.rating,
+          comment: r.comment,
+          createdAt: r.createdAt,
+          user: r.user,
+          jobId: r.jobId
+        }))
+      }
     });
   } catch (e) {
     console.error('Pro Overview error', e);
@@ -112,16 +139,26 @@ exports.getMyJobsForPro = async (req, res) => {
     const pro = await Professional.findOne({ user: userId }).select('_id');
     if (!pro) return res.status(404).json({ success: false, message: 'Professional profile not found' });
 
-    const query = { professional: pro._id };
+    // Query jobs by professional ID OR user ID (in case some jobs were created with user ID)
+    const query = { 
+      $or: [
+        { professional: pro._id },
+        { professional: userId }
+      ]
+    };
     if (status) query.status = status;
 
+    console.log('📋 getMyJobsForPro: Querying jobs with professional ID:', pro._id, 'or user ID:', userId);
+    
     const jobs = await Job.find(query)
       .populate('client', 'name email phone')
       .sort({ createdAt: -1 })
       .lean();
 
+    console.log('✅ Found', jobs.length, 'jobs');
+
     const counts = await Job.aggregate([
-      { $match: { professional: pro._id } },
+      { $match: { $or: [ { professional: pro._id }, { professional: require('mongoose').Types.ObjectId.createFromHexString(String(userId)) } ] } },
       { $group: { _id: '$status', count: { $sum: 1 } } }
     ]);
 

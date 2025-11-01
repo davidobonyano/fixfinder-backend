@@ -184,8 +184,24 @@ const findNearbyJobs = async (req, res) => {
       });
     }
 
-    // Build query
-    const query = { status: 'Pending', isActive: true };
+    // Build query: only show jobs that are actually open for applications
+    const query = {
+      status: { $in: ['Pending', 'Open'] },
+      $nor: [
+        { status: 'Completed' },
+        { status: 'Cancelled' }
+      ],
+      isActive: true,
+      // Exclude jobs that already have an assigned professional or are tied to a conversation
+      $and: [
+        { $or: [ { professional: { $exists: false } }, { professional: null } ] },
+        { $or: [ { conversation: { $exists: false } }, { conversation: null } ] },
+        { lifecycleState: { $nin: ['in_progress','completed_by_pro','completed_by_user','closed','cancelled'] } },
+        { completed: { $ne: true } },
+        { isCompleted: { $ne: true } },
+        { completedAt: { $exists: false } }
+      ]
+    };
     if (category) {
       query.category = category;
     }

@@ -4,6 +4,7 @@ const reviewSchema = new mongoose.Schema(
   {
     professional: { type: mongoose.Schema.Types.ObjectId, ref: "Professional", required: true },
     user: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+    jobId: { type: mongoose.Schema.Types.ObjectId, ref: "Job", required: false },
     rating: { type: Number, required: true, min: 1, max: 5 },
     comment: { type: String, trim: true },
     photos: [{ type: String }],

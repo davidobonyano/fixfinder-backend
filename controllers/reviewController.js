@@ -4,11 +4,40 @@ const { uploadBufferToCloudinary } = require("../utils");
 
 exports.createReview = async (req, res, next) => {
   try {
-    const { professional, rating, comment } = req.body;
-    if (!professional || !rating) {
+    const { professional, professionalId, rating, comment, jobId } = req.body;
+    let proId = professional || professionalId;
+    
+    console.log('📝 Creating review - Request body:', { professional, professionalId, rating, comment, jobId });
+    console.log('👤 User ID:', req.user?.id);
+    
+    // If proId looks like a user ID (not a professional ID), try to resolve it
+    if (proId && !proId.match(/^[0-9a-fA-F]{24}$/)) {
+      console.log('⚠️ proId might not be a valid ObjectId, attempting to resolve...');
+    }
+    
+    // Try to resolve professional ID if what we got might be a user ID
+    if (proId) {
+      // Check if proId is actually a professional document
+      const proDoc = await Professional.findById(proId);
+      if (!proDoc) {
+        // proId might be a user ID, try to find professional by user
+        const proByUser = await Professional.findOne({ user: proId });
+        if (proByUser) {
+          console.log('✅ Resolved professional ID from user ID:', proByUser._id);
+          proId = proByUser._id;
+        }
+      } else {
+        console.log('✅ Using provided professional ID:', proId);
+      }
+    }
+    
+    if (!proId || !rating) {
       return res.status(400).json({ message: "professional and rating are required" });
     }
-    const review = await Review.create({ professional, user: req.user?.id, rating, comment });
+    
+    console.log('💾 Creating review with professional ID:', proId, 'user ID:', req.user?.id);
+    const review = await Review.create({ professional: proId, user: req.user?.id, rating, comment, jobId });
+    console.log('✅ Review created:', review._id);
 
     // Update aggregates
     const stats = await Review.aggregate([
@@ -31,8 +60,11 @@ exports.createReview = async (req, res, next) => {
 exports.getReviewsForProfessional = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const reviews = await Review.find({ professional: id }).sort({ createdAt: -1 });
-    res.json(reviews);
+    const reviews = await Review.find({ professional: id })
+      .populate('user', 'name profilePicture avatarUrl')
+      .populate('jobId', 'title')
+      .sort({ createdAt: -1 });
+    res.json({ success: true, data: { reviews } });
   } catch (err) {
     next(err);
   }
