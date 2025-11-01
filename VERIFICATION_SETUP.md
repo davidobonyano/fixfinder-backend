@@ -9,7 +9,7 @@ MAIL_HOST=sandbox.smtp.mailtrap.io
 MAIL_PORT=587
 MAIL_USER=e93fa2db44fbe3
 MAIL_PASS=1c1df19d5d016b
-MAIL_FROM="FixFinder <no-reply@fixfinder.local>"
+MAIL_FROM="FixFinder <no-reply@fixfinder.local>"yfyi
 ```
 
 ### For Production (Gmail):
