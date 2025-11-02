@@ -312,7 +312,7 @@ const sendMessage = async (req, res) => {
     const userType = req.user.role === 'professional' ? 'professional' : 'user';
 
     // Verify user is part of the conversation
-    const conversation = await Conversation.findById(id);
+    const conversation = await Conversation.findById(id).populate('job');
     if (!conversation) {
       return res.status(404).json({
         success: false,
@@ -329,6 +329,65 @@ const sendMessage = async (req, res) => {
         success: false,
         message: 'Not authorized to send messages in this conversation'
       });
+    }
+
+    // Check if job exists AND is in an active state (not completed/closed/cancelled)
+    // Only active jobs allow unlimited messaging; completed jobs revert to message limit
+    const Job = require('../models/Job');
+    let activeJob = null;
+    
+    if (conversation.job) {
+      const jobId = conversation.job._id || conversation.job;
+      if (jobId) {
+        activeJob = await Job.findById(jobId);
+      }
+    }
+    
+    // Job is considered "active" if it exists and is NOT in a completed/closed state
+    const isJobActive = activeJob && !['completed_by_pro', 'completed_by_user', 'closed', 'cancelled'].includes(
+      String(activeJob.lifecycleState || '').toLowerCase()
+    ) && !['Completed', 'Cancelled'].includes(String(activeJob.status || ''));
+    
+    console.log(`🔍 Message validation check for conversation ${id}:`, {
+      userId,
+      hasJob: !!activeJob,
+      jobId: activeJob?._id || 'none',
+      jobStatus: activeJob?.status || 'none',
+      jobLifecycle: activeJob?.lifecycleState || 'none',
+      isJobActive
+    });
+
+    if (!isJobActive) {
+      // Count messages sent by current user (exclude system messages, location shares, and hidden messages)
+      // IMPORTANT: Count BEFORE creating the new message
+      // Also exclude messages hidden by the current user (from "delete for me")
+      const userObjectId = new mongoose.Types.ObjectId(userId);
+      const userMessageCount = await Message.countDocuments({
+        conversation: id,
+        sender: userId,
+        isDeleted: false,
+        messageType: { $nin: ['system', 'location_share'] },
+        $or: [
+          { hiddenFor: { $exists: false } },
+          { hiddenFor: { $ne: userObjectId } }
+        ]
+      });
+
+      const MESSAGE_LIMIT_PER_USER = 5;
+      
+      // Block if already at or above limit (this prevents sending the 6th, 7th, etc. message)
+      if (userMessageCount >= MESSAGE_LIMIT_PER_USER) {
+        console.log(`🚫 Message blocked: User ${userId} has sent ${userMessageCount}/${MESSAGE_LIMIT_PER_USER} messages in conversation ${id}`);
+        return res.status(403).json({
+          success: false,
+          message: 'Message limit reached. Please create a job request to continue this conversation.',
+          code: 'MESSAGE_LIMIT_REACHED',
+          limit: MESSAGE_LIMIT_PER_USER,
+          currentCount: userMessageCount
+        });
+      }
+      
+      console.log(`✅ Message allowed: User ${userId} has sent ${userMessageCount}/${MESSAGE_LIMIT_PER_USER} messages in conversation ${id}`);
     }
 
     // Media uploads disabled (no req.files handling)
@@ -599,6 +658,49 @@ const shareLocation = async (req, res) => {
         success: false,
         message: 'Not authorized to share location in this conversation'
       });
+    }
+
+    // Check message limit (location sharing is excluded from count but still blocked when limit reached)
+    // Only active jobs allow unlimited messaging; completed/closed jobs revert to message limit
+    const Job = require('../models/Job');
+    let activeJob = null;
+    
+    if (conversation.job) {
+      const jobId = conversation.job._id || conversation.job;
+      if (jobId) {
+        activeJob = await Job.findById(jobId);
+      }
+    }
+    
+    const isJobActive = activeJob && !['completed_by_pro', 'completed_by_user', 'closed', 'cancelled'].includes(
+      String(activeJob.lifecycleState || '').toLowerCase()
+    ) && !['Completed', 'Cancelled'].includes(String(activeJob.status || ''));
+    
+    if (!isJobActive) {
+      // Also exclude messages hidden by the current user (from "delete for me")
+      const userObjectId = new mongoose.Types.ObjectId(userId);
+      const userMessageCount = await Message.countDocuments({
+        conversation: id,
+        sender: userId,
+        isDeleted: false,
+        messageType: { $nin: ['system', 'location_share'] },
+        $or: [
+          { hiddenFor: { $exists: false } },
+          { hiddenFor: { $ne: userObjectId } }
+        ]
+      });
+
+      const MESSAGE_LIMIT_PER_USER = 5;
+      
+      if (userMessageCount >= MESSAGE_LIMIT_PER_USER) {
+        return res.status(403).json({
+          success: false,
+          message: 'Message limit reached. Please create a job request to continue this conversation.',
+          code: 'MESSAGE_LIMIT_REACHED',
+          limit: MESSAGE_LIMIT_PER_USER,
+          currentCount: userMessageCount
+        });
+      }
     }
 
     // Create location sharing message (only for sender)

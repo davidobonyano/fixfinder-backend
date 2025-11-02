@@ -607,11 +607,16 @@ router.delete('/delete-account', protect, async (req, res) => {
   try {
     const userId = req.user.id;
 
+    // Get user's professional profile ID if exists (needed for connections)
+    const Professional = require('../models/Professional');
+    const professionalProfile = await Professional.findOne({ user: userId });
+    const professionalId = professionalProfile?._id;
+
     // Delete all user-related data
     await Promise.all([
       // Delete user's jobs
       require('../models/Job').deleteMany({ 
-        $or: [{ client: userId }, { professional: userId }] 
+        $or: [{ client: userId }, { professional: professionalId }] 
       }),
       
       // Delete user's messages and conversations
@@ -622,7 +627,7 @@ router.delete('/delete-account', protect, async (req, res) => {
       
       // Delete user's reviews
       require('../models/Review').deleteMany({ 
-        $or: [{ user: userId }, { professional: userId }] 
+        $or: [{ user: userId }, { professional: professionalId }] 
       }),
       
       // Delete user's notifications
@@ -631,16 +636,24 @@ router.delete('/delete-account', protect, async (req, res) => {
       }),
       
       // Delete user's professional profile if exists
-      require('../models/Professional').deleteOne({ user: userId }),
+      Professional.deleteOne({ user: userId }),
       
       // Delete user's bookings
       require('../models/Booking').deleteMany({ 
-        $or: [{ client: userId }, { professional: userId }] 
+        $or: [{ client: userId }, { professional: professionalId }] 
       }),
       
       // Delete user's payments
       require('../models/Payment').deleteMany({ 
-        $or: [{ client: userId }, { professional: userId }] 
+        $or: [{ client: userId }, { professional: professionalId }] 
+      }),
+      
+      // Delete user's connections (both as requester and as professional)
+      require('../models/Connection').deleteMany({ 
+        $or: [
+          { requester: userId },
+          { professional: professionalId }
+        ]
       })
     ]);
 

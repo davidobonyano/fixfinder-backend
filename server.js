@@ -74,8 +74,11 @@ if (!process.env.MONGO_URI) {
 if (!process.env.CLOUDINARY_CLOUD_NAME) {
   console.warn("⚠️  CLOUDINARY_CLOUD_NAME not set - file uploads will fail");
 }
-if (!process.env.MAIL_HOST) {
-  console.warn("⚠️  MAIL_HOST not set - email notifications disabled");
+if (!process.env.MAIL_HOST && !process.env.RESEND_API_KEY) {
+  console.warn("⚠️  Email not configured - set either RESEND_API_KEY (recommended) or MAIL_HOST, MAIL_USER, MAIL_PASS");
+}
+if (process.env.RESEND_API_KEY) {
+  console.log("✅ Using Resend email service");
 }
 if (!process.env.PAYSTACK_SECRET_KEY) {
   console.warn("⚠️  PAYSTACK_SECRET_KEY not set - payments will use mock mode");

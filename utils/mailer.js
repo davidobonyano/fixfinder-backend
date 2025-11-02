@@ -2,6 +2,27 @@ const nodemailer = require("nodemailer");
 
 // Create transporter with connection options
 const getTransporter = () => {
+  // PRIORITY: If RESEND_API_KEY is set, use Resend (even if Gmail settings exist)
+  if (process.env.RESEND_API_KEY) {
+    // Use Resend SMTP service
+    console.log('📧 Transporter configured: Using Resend (RESEND_API_KEY detected)');
+    return nodemailer.createTransport({
+      host: 'smtp.resend.com',
+      port: 465,
+      secure: true, // SSL
+      auth: {
+        user: 'resend',
+        pass: process.env.RESEND_API_KEY,
+      },
+      connectionTimeout: 10000,
+      greetingTimeout: 5000,
+      socketTimeout: 10000,
+    });
+  }
+  
+  // Default SMTP configuration (Gmail, etc.)
+  console.log('📧 Transporter configured: Using SMTP (RESEND_API_KEY not found)');
+  console.log('⚠️  Make sure RESEND_API_KEY is set in your .env file if you want to use Resend');
   const port = Number(process.env.MAIL_PORT || 587);
   const isSecure = port === 465;
   
@@ -34,46 +55,67 @@ const getTransporter = () => {
 const transporter = getTransporter();
 
 async function sendMail({ to, subject, html, text }) {
-  if (!process.env.MAIL_HOST || !process.env.MAIL_USER || !process.env.MAIL_PASS) {
-    console.warn('⚠️ Email not configured - MAIL_HOST, MAIL_USER, or MAIL_PASS missing');
-    throw new Error('Email service is not configured. Please configure MAIL_HOST, MAIL_USER, and MAIL_PASS in environment variables.');
+  // Check if Resend is configured
+  const isResend = process.env.RESEND_API_KEY;
+  
+  if (isResend) {
+    // Resend configuration - only need API key
+    console.log('📧 Using Resend email service');
+  } else {
+    // Traditional SMTP - need all credentials
+    if (!process.env.MAIL_HOST || !process.env.MAIL_USER || !process.env.MAIL_PASS) {
+      console.warn('⚠️ Email not configured - MAIL_HOST, MAIL_USER, or MAIL_PASS missing (or use RESEND_API_KEY for Resend)');
+      throw new Error('Email service is not configured. Please configure either RESEND_API_KEY (for Resend) or MAIL_HOST, MAIL_USER, and MAIL_PASS (for SMTP) in environment variables.');
+    }
   }
   
   try {
-    // Clean MAIL_FROM - remove any extra spaces and ensure it matches authenticated email
-    let from = process.env.MAIL_FROM || `FixFinder <${process.env.MAIL_USER || 'no-reply@fixfinder.local'}>`;
+    // Clean MAIL_FROM - remove any extra spaces
+    let from = process.env.MAIL_FROM || 'FixFinder <onboarding@resend.dev>';
     
     // Fix common formatting issues: "FixFinder < email@example.com>" -> "FixFinder <email@example.com>"
     from = from.replace(/<\s+/, '<').replace(/\s+>/, '>');
     
-    // For Gmail, FROM email should match the authenticated MAIL_USER
-    // Extract email from MAIL_FROM or use MAIL_USER
+    // Extract email from MAIL_FROM
     const fromMatch = from.match(/<([^>]+)>/);
-    const fromEmail = fromMatch ? fromMatch[1].trim() : process.env.MAIL_USER;
+    const fromEmail = fromMatch ? fromMatch[1].trim() : null;
     
-    // If FROM email doesn't match MAIL_USER, update it to match (Gmail requirement)
-    if (process.env.MAIL_HOST === 'smtp.gmail.com' && fromEmail !== process.env.MAIL_USER) {
-      const nameMatch = from.match(/^([^<]+)/);
-      const displayName = nameMatch ? nameMatch[1].trim() : 'FixFinder';
-      from = `${displayName} <${process.env.MAIL_USER}>`;
-      console.log('⚠️ Updated FROM address to match authenticated Gmail user');
+    // For Resend: FROM email must be verified in Resend dashboard
+    // For Gmail: FROM email should match authenticated MAIL_USER
+    if (process.env.RESEND_API_KEY) {
+      // Resend: Use RESEND_FROM if set (priority), otherwise MAIL_FROM, otherwise default
+      from = process.env.RESEND_FROM || process.env.MAIL_FROM || 'FixFinder <onboarding@resend.dev>';
+      // Clean up formatting
+      from = from.replace(/<\s+/, '<').replace(/\s+>/, '>');
+      console.log('📧 Resend FROM address:', from);
+    } else if (process.env.MAIL_HOST === 'smtp.gmail.com') {
+      // For Gmail, FROM email should match authenticated MAIL_USER
+      if (fromEmail !== process.env.MAIL_USER) {
+        const nameMatch = from.match(/^([^<]+)/);
+        const displayName = nameMatch ? nameMatch[1].trim() : 'FixFinder';
+        from = `${displayName} <${process.env.MAIL_USER}>`;
+        console.log('⚠️ Updated FROM address to match authenticated Gmail user');
+      }
     }
+    
+    // Determine which service is actually being used
+    const isUsingResend = !!process.env.RESEND_API_KEY;
     
     console.log('📧 Attempting to send email:', { 
       to, 
       from, 
       subject,
-      host: process.env.MAIL_HOST,
-      port: process.env.MAIL_PORT,
-      user: process.env.MAIL_USER
+      service: isUsingResend ? 'Resend' : 'SMTP',
+      host: isUsingResend ? 'smtp.resend.com' : process.env.MAIL_HOST,
+      port: isUsingResend ? '465' : (process.env.MAIL_PORT || '587')
     });
     
     // Try to verify connection first (optional, but helps debug)
     try {
       await transporter.verify();
-      console.log('✅ SMTP server connection verified');
+      console.log(`✅ ${isUsingResend ? 'Resend' : 'SMTP'} server connection verified`);
     } catch (verifyError) {
-      console.warn('⚠️ SMTP verification failed, but will attempt to send anyway:', verifyError.message);
+      console.warn(`⚠️ ${isUsingResend ? 'Resend' : 'SMTP'} verification failed, but will attempt to send anyway:`, verifyError.message);
     }
     
     const result = await transporter.sendMail({ from, to, subject, text, html });
