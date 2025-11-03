@@ -1,4 +1,11 @@
 const nodemailer = require("nodemailer");
+let ResendClient = null;
+try {
+  // Lazy optional import to avoid hard crash if package is missing during dev
+  ResendClient = require('resend').Resend;
+} catch (e) {
+  ResendClient = null;
+}
 
 // Create transporter with connection options
 const getTransporter = () => {
@@ -55,74 +62,69 @@ const getTransporter = () => {
 const transporter = getTransporter();
 
 async function sendMail({ to, subject, html, text }) {
-  // Check if Resend is configured
-  const isResend = process.env.RESEND_API_KEY;
-  
-  if (isResend) {
-    // Resend configuration - only need API key
-    console.log('📧 Using Resend email service');
-  } else {
-    // Traditional SMTP - need all credentials
-    if (!process.env.MAIL_HOST || !process.env.MAIL_USER || !process.env.MAIL_PASS) {
-      console.warn('⚠️ Email not configured - MAIL_HOST, MAIL_USER, or MAIL_PASS missing (or use RESEND_API_KEY for Resend)');
-      throw new Error('Email service is not configured. Please configure either RESEND_API_KEY (for Resend) or MAIL_HOST, MAIL_USER, and MAIL_PASS (for SMTP) in environment variables.');
+  const hasResendKey = !!process.env.RESEND_API_KEY;
+  const canUseResendSdk = hasResendKey && !!ResendClient;
+
+  // Normalize/choose FROM
+  let from = (process.env.RESEND_FROM || process.env.MAIL_FROM || 'FixFinder <onboarding@resend.dev>')
+    .replace(/<\s+/, '<')
+    .replace(/\s+>/, '>');
+
+  if (canUseResendSdk) {
+    // Use Resend HTTP API (no SMTP, bypasses blocked ports)
+    const resend = new ResendClient(process.env.RESEND_API_KEY);
+    console.log('📧 Using Resend HTTP API');
+    console.log('📧 Resend FROM address:', from);
+    console.log('📧 Attempting to send email:', { to, from, subject, service: 'Resend-HTTP' });
+
+    try {
+      const result = await resend.emails.send({ from, to, subject, html, text });
+      if (result?.error) {
+        throw new Error(result.error?.message || 'Resend API error');
+      }
+      console.log('✅ Email sent successfully to:', to);
+      return result;
+    } catch (error) {
+      console.error('❌ Error sending via Resend HTTP API:', error?.message || error);
+      // Fall through to SMTP fallback only if SMTP is configured
+      if (!process.env.MAIL_HOST || !process.env.MAIL_USER || !process.env.MAIL_PASS) {
+        throw error;
+      }
+      console.warn('↩️ Falling back to SMTP transport due to Resend HTTP failure');
     }
   }
-  
+
+  // SMTP path (fallback or when no RESEND_API_KEY)
+  if (!process.env.MAIL_HOST || !process.env.MAIL_USER || !process.env.MAIL_PASS) {
+    console.warn('⚠️ Email not configured - MAIL_HOST, MAIL_USER, or MAIL_PASS missing (or set RESEND_API_KEY to use Resend HTTP).');
+    throw new Error('Email service is not configured. Please configure either RESEND_API_KEY (for Resend HTTP) or MAIL_HOST, MAIL_USER, and MAIL_PASS (for SMTP) in environment variables.');
+  }
+
+  // Ensure Gmail FROM matches auth user when using Gmail
+  const fromMatch = from.match(/<([^>]+)>/);
+  const fromEmail = fromMatch ? fromMatch[1].trim() : null;
+  if (process.env.MAIL_HOST === 'smtp.gmail.com' && fromEmail !== process.env.MAIL_USER) {
+    const nameMatch = from.match(/^([^<]+)/);
+    const displayName = nameMatch ? nameMatch[1].trim() : 'FixFinder';
+    from = `${displayName} <${process.env.MAIL_USER}>`;
+    console.log('⚠️ Updated FROM address to match authenticated Gmail user');
+  }
+
+  console.log('📧 Attempting to send email via SMTP:', { to, from, subject, service: 'SMTP', host: process.env.MAIL_HOST, port: (process.env.MAIL_PORT || '587') });
+
   try {
-    // Clean MAIL_FROM - remove any extra spaces
-    let from = process.env.MAIL_FROM || 'FixFinder <onboarding@resend.dev>';
-    
-    // Fix common formatting issues: "FixFinder < email@example.com>" -> "FixFinder <email@example.com>"
-    from = from.replace(/<\s+/, '<').replace(/\s+>/, '>');
-    
-    // Extract email from MAIL_FROM
-    const fromMatch = from.match(/<([^>]+)>/);
-    const fromEmail = fromMatch ? fromMatch[1].trim() : null;
-    
-    // For Resend: FROM email must be verified in Resend dashboard
-    // For Gmail: FROM email should match authenticated MAIL_USER
-    if (process.env.RESEND_API_KEY) {
-      // Resend: Use RESEND_FROM if set (priority), otherwise MAIL_FROM, otherwise default
-      from = process.env.RESEND_FROM || process.env.MAIL_FROM || 'FixFinder <onboarding@resend.dev>';
-      // Clean up formatting
-      from = from.replace(/<\s+/, '<').replace(/\s+>/, '>');
-      console.log('📧 Resend FROM address:', from);
-    } else if (process.env.MAIL_HOST === 'smtp.gmail.com') {
-      // For Gmail, FROM email should match authenticated MAIL_USER
-      if (fromEmail !== process.env.MAIL_USER) {
-        const nameMatch = from.match(/^([^<]+)/);
-        const displayName = nameMatch ? nameMatch[1].trim() : 'FixFinder';
-        from = `${displayName} <${process.env.MAIL_USER}>`;
-        console.log('⚠️ Updated FROM address to match authenticated Gmail user');
-      }
-    }
-    
-    // Determine which service is actually being used
-    const isUsingResend = !!process.env.RESEND_API_KEY;
-    
-    console.log('📧 Attempting to send email:', { 
-      to, 
-      from, 
-      subject,
-      service: isUsingResend ? 'Resend' : 'SMTP',
-      host: isUsingResend ? 'smtp.resend.com' : process.env.MAIL_HOST,
-      port: isUsingResend ? '465' : (process.env.MAIL_PORT || '587')
-    });
-    
-    // Try to verify connection first (optional, but helps debug)
     try {
       await transporter.verify();
-      console.log(`✅ ${isUsingResend ? 'Resend' : 'SMTP'} server connection verified`);
+      console.log('✅ SMTP server connection verified');
     } catch (verifyError) {
-      console.warn(`⚠️ ${isUsingResend ? 'Resend' : 'SMTP'} verification failed, but will attempt to send anyway:`, verifyError.message);
+      console.warn('⚠️ SMTP verification failed, but will attempt to send anyway:', verifyError.message);
     }
-    
+
     const result = await transporter.sendMail({ from, to, subject, text, html });
     console.log('✅ Email sent successfully to:', to);
     return result;
   } catch (error) {
-    console.error('❌ Error sending email:', error.message);
+    console.error('❌ Error sending email via SMTP:', error.message);
     console.error('Error details:', {
       code: error.code,
       command: error.command,
@@ -130,16 +132,13 @@ async function sendMail({ to, subject, html, text }) {
       responseCode: error.responseCode,
       responseMessage: error.responseMessage
     });
-    
-    // More helpful error messages
     if (error.code === 'EAUTH') {
-      throw new Error('Email authentication failed. Please check your Gmail App Password is correct.');
+      throw new Error('Email authentication failed. Check your SMTP credentials.');
     } else if (error.code === 'ECONNECTION') {
       throw new Error('Could not connect to email server. Please check your network connection.');
     } else if (error.responseCode === 535) {
-      throw new Error('Email authentication failed. Make sure you\'re using a Gmail App Password, not your regular password.');
+      throw new Error('Email authentication failed. For Gmail, use an App Password.');
     }
-    
     throw error;
   }
 }
