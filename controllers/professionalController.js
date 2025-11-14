@@ -51,7 +51,7 @@ exports.getProfessionals = async (req, res, next) => {
     
     // Select specific fields to ensure we get photos and videos
     const pros = await Professional.find(filter)
-      .populate('user', 'name email phone profilePicture')
+      .populate('user', 'name email phone profilePicture isVerified')
       .select('name category city location bio yearsOfExperience pricePerHour languages certifications photos videos ratingAvg ratingCount completedJobs isVerified isActive user')
       .sort({ ratingAvg: -1, createdAt: -1 });
     
@@ -67,7 +67,7 @@ exports.getProfessionals = async (req, res, next) => {
 exports.getProfessionalById = async (req, res, next) => {
   try {
     const pro = await Professional.findById(req.params.id)
-      .populate('user', 'name email phone')
+      .populate('user', 'name email phone isVerified')
       .select('name category city location bio yearsOfExperience pricePerHour languages certifications photos videos photosMeta videosMeta ratingAvg ratingCount completedJobs isVerified isActive');
     if (!pro) return res.status(404).json({ message: "Professional not found" });
     

@@ -96,6 +96,39 @@ const userSchema = new mongoose.Schema(
       hasAudio: { type: Boolean },
       frameCount: { type: Number },
     },
+    faceVerification: {
+      status: {
+        type: String,
+        enum: ["not_started", "in_progress", "failed", "verified", "reference_set"],
+        default: "not_started",
+      },
+      descriptor: {
+        type: [Number],
+        select: false,
+      },
+      referenceImageUrl: { type: String },
+      referenceDescriptor: {
+        type: [Number],
+      },
+      referenceSource: {
+        sourceType: {
+          type: String,
+          enum: ["profile_picture", "portfolio"],
+        },
+        assetId: { type: String },
+        label: { type: String },
+      },
+      referenceSetAt: { type: Date },
+      prompt: { type: String },
+      promptExpiresAt: { type: Date },
+      attempts: { type: Number, default: 0 },
+      lastScore: { type: Number },
+      lastDistance: { type: Number },
+      failedAttempts: { type: Number, default: 0 },
+      modelVersion: { type: String },
+      verifiedAt: { type: Date },
+      updatedAt: { type: Date },
+    },
   },
   { timestamps: true }
 );
@@ -103,6 +136,12 @@ const userSchema = new mongoose.Schema(
 userSchema.methods.toSafeJSON = function () {
   const obj = this.toObject({ getters: true, virtuals: true });
   delete obj.password;
+  if (obj.faceVerification?.descriptor) {
+    delete obj.faceVerification.descriptor;
+  }
+  if (obj.faceVerification?.referenceDescriptor) {
+    delete obj.faceVerification.referenceDescriptor;
+  }
   return obj;
 };
 
